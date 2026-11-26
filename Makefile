@@ -1,6 +1,6 @@
 # pnp: build, test, install, package. Needs only build-essential (gcc, make, binutils) and, for `make deb`, dpkg-dev.
 #   make                  build/pnp
-#   make test             build the test binary and run tests/run.sh
+#   make test             build the test binaries and run tests/run.sh (needs script(1), from bsdutils)
 #   sudo make install     /usr/local/bin/pnp and its manual (PREFIX, DESTDIR)
 #   sudo make install-udev  the udev rule and the pnp group, so the group can read /dev/hwrng
 #   make deb              build/pnp_<version>_<arch>.deb

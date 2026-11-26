@@ -2,9 +2,10 @@
  *
  *   pnp FILE            FILE -> FILE.pnp (ciphertext) + FILE.pnp.key (the pad)
  *   pnp -d FILE.pnp     FILE.pnp + FILE.pnp.key -> FILE
+ *   pnp                 alone, in a terminal: the interactive mode (tui.c), which calls pnp_encrypt / pnp_decrypt
  *
- * The file formats are in docs/format.md: a 24-byte header (magic, then a 16-byte ID shared by a ciphertext and its
- * key, so a mismatched key is refused), then the body. ciphertext body = plaintext XOR pad; key body = pad.
+ * The file formats are in docs/format.md and format.h: a 24-byte header (magic, then a 16-byte ID shared by a
+ * ciphertext and its key, so a mismatched key is refused), then the body. ciphertext body = plaintext XOR pad; key body = pad.
  * The integrity check (mac.c): a one-time MAC of ID || plaintext, keyed by 32 more hardware-random bytes at the start
  * of the key's body; its tag ends the ciphertext. Decrypting renames the output into place only if the tag matches.
  *

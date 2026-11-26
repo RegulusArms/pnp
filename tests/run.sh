@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# pnp's test suite: make test runs it (it needs build/pnp, build/pnp-test, build/test_health, build/test_mac and
-# build/xorcheck).
-# The tests run build/pnp-test, the same program with test hooks (src/rng.c): PNP_TEST_HWRNG points /dev/hwrng at a
-# file or FIFO, and PNP_TEST_NO_RDSEED turns RDSEED off, so they give the same results on every machine, with or
-# without hardware random sources. They don't touch the real /dev/hwrng.
+# pnp's test suite: make test runs it (it needs build/pnp, build/pnp-test, build/test_health, build/test_mac,
+# build/test_kdf and build/xorcheck, and script(1) from bsdutils for the interactive mode).
+# The tests run build/pnp-test, the same program with test hooks: PNP_TEST_HWRNG points /dev/hwrng at a file or FIFO
+# and PNP_TEST_NO_RDSEED turns RDSEED off (src/rng.c), so they give the same results on every machine, with or
+# without hardware random sources; PNP_TEST_MEMINFO replaces /proc/meminfo (src/protect.c); PNP_TEST_MEDIA replaces
+# /media/$USER (src/tui.c). They don't touch the real /dev/hwrng or drives.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 B="$PWD/build"
