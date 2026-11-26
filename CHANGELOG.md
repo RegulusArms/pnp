@@ -10,6 +10,10 @@ What changed in each version of pnp, newest first.
 - **`--shares N` splits the key into N shares** (2 to 16), each one useless alone, all of them needed to decrypt.
   Like the one-time pad itself, this holds against any amount of computing power. Decrypting finds
   `FILE.pnp.key.1`, `.2`… by itself, or takes `-k` once per share, and refuses an incomplete set.
+- **Tampering and damage are detected.** Each encryption gets a one-time MAC (an information-theoretic integrity
+  check, so it holds even if P = NP, unlike HMAC or a hash). If the ciphertext or the key has changed by even one
+  bit, decrypting fails and writes nothing. The file format is now version 002; files from older versions still
+  decrypt, with a note that they have no integrity check.
 - The README has a new section, "Keeping your keys".
 
 ## 0.1.0-alpha.2

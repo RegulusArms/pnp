@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# pnp's test suite: make test runs it (it needs build/pnp, build/pnp-test, build/test_health and build/xorcheck).
+# pnp's test suite: make test runs it (it needs build/pnp, build/pnp-test, build/test_health, build/test_mac and
+# build/xorcheck).
 # The tests run build/pnp-test, the same program with test hooks (src/rng.c): PNP_TEST_HWRNG points /dev/hwrng at a
 # file or FIFO, and PNP_TEST_NO_RDSEED turns RDSEED off, so they give the same results on every machine, with or
 # without hardware random sources. They don't touch the real /dev/hwrng.
@@ -21,6 +22,8 @@ fresh() { rm -rf "$T/w" && mkdir "$T/w"; }
 
 # --- the health tests (unit tests of src/rng.c's SP 800-90B tests)
 "$B/test_health" || fails=$((fails + $?))
+# --- the integrity check's MAC (unit tests of src/mac.c)
+"$B/test_mac" || fails=$((fails + $?))
 
 # --- encrypt and decrypt
 for size in 0 1 65535 65536 65537 $((3 << 20 | 7)); do
@@ -28,10 +31,10 @@ for size in 0 1 65535 65536 65537 $((3 << 20 | 7)); do
     head -c "$size" /dev/urandom >"$T/w/f"
     cp "$T/w/f" "$T/w/orig"
     check '"$PNP" -q "$T/w/f" && [[ -f "$T/w/f.pnp" && -f "$T/w/f.pnp.key" ]] &&
-           [[ $(stat -c %s "$T/w/f.pnp") == $((size + 24)) && $(stat -c %s "$T/w/f.pnp.key") == $((size + 24)) ]]' \
-        "encrypting a $size-byte file writes FILE.pnp and FILE.pnp.key, each 24 bytes longer than it"
+           [[ $(stat -c %s "$T/w/f.pnp") == $((size + 40)) && $(stat -c %s "$T/w/f.pnp.key") == $((size + 56)) ]]' \
+        "encrypting a $size-byte file writes FILE.pnp (+ 24-byte header, 16-byte tag) and FILE.pnp.key (+ 24, 32-byte MAC key)"
     check '"$B/xorcheck" "$T/w/orig" "$T/w/f.pnp" "$T/w/f.pnp.key"' \
-        "$size bytes: ciphertext XOR key is the plaintext, and both headers match (checked independently)"
+        "$size bytes: ciphertext XOR pad is the plaintext, the headers match and the MAC tag is right (checked independently)"
     rm "$T/w/f"
     check '"$PNP" -q -d "$T/w/f.pnp" && cmp -s "$T/w/f" "$T/w/orig"' "$size bytes: decrypting gives back the file"
 done
@@ -143,8 +146,8 @@ check 'no_parts' "stopping it removes the parts in both folders"
 fresh
 yes 'the same line, over and over' | head -c 100000 >"$T/w/f"
 check '"$PNP" -q --shares 3 "$T/w/f" && [[ ! -e "$T/w/f.pnp.key" ]] &&
-       for i in 1 2 3; do [[ $(stat -c %s "$T/w/f.pnp.key.$i") == 100026 && $(stat -c %a "$T/w/f.pnp.key.$i") == 600 ]] || exit 1; done' \
-    "--shares 3 writes FILE.pnp.key.1, .2 and .3 (mode 600, each 26 bytes longer than the file) and no whole key"
+       for i in 1 2 3; do [[ $(stat -c %s "$T/w/f.pnp.key.$i") == 100058 && $(stat -c %a "$T/w/f.pnp.key.$i") == 600 ]] || exit 1; done' \
+    "--shares 3 writes FILE.pnp.key.1, .2 and .3 (mode 600, each 26 + 32 bytes longer than the file) and no whole key"
 check '"$B/xorcheck" "$T/w/f" "$T/w/f.pnp" "$T/w/f.pnp.key.1" "$T/w/f.pnp.key.2" "$T/w/f.pnp.key.3"' \
     "ciphertext XOR all three shares is the plaintext, and the share headers are right (checked independently)"
 check 'for i in 1 2 3; do [[ $(tail -c +27 "$T/w/f.pnp.key.$i" | gzip -c | wc -c) -gt 100000 ]] || exit 1; done &&
@@ -196,6 +199,48 @@ head -c 100000 /dev/urandom >"$T/runsout2"
 check '! PNP_TEST_HWRNG="$T/runsout2" "$PNP" -q --shares 2 --key-out "$T/w/a" "$T/w/big" 2>"$T/err" && grep -q "stopped working" "$T/err" &&
        [[ ! -e "$T/w/big.pnp" && ! -e "$T/w/a/big.pnp.key.1" ]] && no_parts' \
     "shares take fresh hardware randomness: a source too short for them stops the run and leaves nothing"
+
+# --- the integrity check: a changed ciphertext or key is detected, and nothing is written
+flip() { # flip one bit of byte $2 of file $1
+    local b
+    b=$(od -An -tu1 -j "$2" -N1 "$1" | tr -d ' ')
+    printf "$(printf '\\%03o' $((b ^ 1)))" | dd of="$1" bs=1 seek="$2" conv=notrunc status=none
+}
+fresh
+head -c 100000 /dev/urandom >"$T/w/f"
+"$PNP" -q "$T/w/f"
+cp "$T/w/f.pnp" "$T/w/ct" && cp "$T/w/f.pnp.key" "$T/w/key" && mv "$T/w/f" "$T/w/orig"
+for where in "ciphertext 24" "ciphertext 50000" "ciphertext 100023" "ciphertext 100039" "key 30" "key 45" "key 56" "key 70000" "key 100055"; do
+    set -- $where
+    cp "$T/w/ct" "$T/w/f.pnp" && cp "$T/w/key" "$T/w/f.pnp.key"
+    if [[ $1 == ciphertext ]]; then flip "$T/w/f.pnp" "$2"; else flip "$T/w/f.pnp.key" "$2"; fi
+    check '! "$PNP" -q -d "$T/w/f.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" && [[ ! -e "$T/w/f" ]] && no_parts' \
+        "one flipped bit in the $1 at byte $2 is detected, and nothing is written"
+done
+cp "$T/w/ct" "$T/w/f.pnp" && cp "$T/w/key" "$T/w/f.pnp.key"
+check '"$PNP" -q -d "$T/w/f.pnp" && cmp -s "$T/w/f" "$T/w/orig"' "the unchanged files still decrypt (the check passes)"
+rm "$T/w/f"
+printf x >>"$T/w/f.pnp" && printf y >>"$T/w/f.pnp.key"
+check '! "$PNP" -q -d "$T/w/f.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" && [[ ! -e "$T/w/f" ]]' \
+    "a byte appended to both files is detected"
+cp "$T/w/ct" "$T/w/f.pnp" && cp "$T/w/key" "$T/w/f.pnp.key"
+truncate -s 100039 "$T/w/f.pnp" && truncate -s 100055 "$T/w/f.pnp.key"
+check '! "$PNP" -q -d "$T/w/f.pnp" 2>/dev/null && [[ ! -e "$T/w/f" ]]' "both files cut short by a byte is detected"
+fresh
+head -c 70000 /dev/urandom >"$T/w/f"
+"$PNP" -q --shares 2 "$T/w/f"
+mv "$T/w/f" "$T/w/orig"
+flip "$T/w/f.pnp.key.2" 40000
+check '! "$PNP" -q -d "$T/w/f.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" && [[ ! -e "$T/w/f" ]]' \
+    "a flipped bit in one share is detected"
+# format 001 (pnp 0.1.0-alpha.2 and older, no check) still decrypts, with a note. A zero plaintext makes the
+# ciphertext body equal the pad, so the files can be made here without pnp.
+fresh
+head -c 16 /dev/urandom >"$T/id" && head -c 5000 /dev/urandom >"$T/pad"
+cat <(printf PNPCT001) "$T/id" "$T/pad" >"$T/w/old.pnp"
+cat <(printf PNPKY001) "$T/id" "$T/pad" >"$T/w/old.pnp.key"
+check '"$PNP" -d "$T/w/old.pnp" 2>"$T/err" && cmp -s "$T/w/old" <(head -c 5000 /dev/zero) && grep -q "no integrity check" "$T/err"' \
+    "a format 001 file from an older pnp still decrypts, with a note that it has no integrity check"
 
 # --- wrong or damaged keys
 fresh

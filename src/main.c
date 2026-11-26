@@ -5,6 +5,8 @@
  *
  * The file formats are in docs/format.md: a 24-byte header (magic, then a 16-byte ID shared by a ciphertext and its
  * key, so a mismatched key is refused), then the body. ciphertext body = plaintext XOR pad; key body = pad.
+ * The integrity check (mac.c): a one-time MAC of ID || plaintext, keyed by 32 more hardware-random bytes at the start
+ * of the key's body; its tag ends the ciphertext. Decrypting renames the output into place only if the tag matches.
  *
  * --key-out writes the key straight into another folder (a USB stick, say), so it never touches the internal disk.
  * --shares N writes the key as N shares instead of one key file: shares 1..N-1 are fresh hardware-random pads and
@@ -12,6 +14,7 @@
  * (information-theoretically, like the pad itself); all N XORed together give the pad back. */
 #define _GNU_SOURCE
 #include "fileio.h"
+#include "mac.h"
 #include "rng.h"
 
 #include <errno.h>
@@ -39,9 +42,14 @@
 #define ID_LEN 16
 #define HEADER_LEN (MAGIC_LEN + ID_LEN)       /* ciphertext and whole key */
 #define SHARE_HEADER_LEN (HEADER_LEN + 2)     /* a key share: then its number (1..count) and the count */
-static const char MAGIC_CT[MAGIC_LEN] = {'P', 'N', 'P', 'C', 'T', '0', '0', '1'};
-static const char MAGIC_KEY[MAGIC_LEN] = {'P', 'N', 'P', 'K', 'Y', '0', '0', '1'};
-static const char MAGIC_SHARE[MAGIC_LEN] = {'P', 'N', 'P', 'S', 'H', '0', '0', '1'};
+/* "PNP" + the kind + the format version. Version 002 adds the integrity check: the key's (or each share's) body
+ * starts with the MAC key (PNP_MAC_KEY_LEN), and the ciphertext ends with the tag (PNP_MAC_TAG_LEN). Version 001
+ * (pnp 0.1.0-alpha.2 and older; no shares) is still decrypted, without a check, and never written. */
+static const char MAGIC_CT[MAGIC_LEN] = {'P', 'N', 'P', 'C', 'T', '0', '0', '2'};
+static const char MAGIC_KEY[MAGIC_LEN] = {'P', 'N', 'P', 'K', 'Y', '0', '0', '2'};
+static const char MAGIC_SHARE[MAGIC_LEN] = {'P', 'N', 'P', 'S', 'H', '0', '0', '2'};
+static const char MAGIC_CT_V1[MAGIC_LEN] = {'P', 'N', 'P', 'C', 'T', '0', '0', '1'};
+static const char MAGIC_KEY_V1[MAGIC_LEN] = {'P', 'N', 'P', 'K', 'Y', '0', '0', '1'};
 
 #define MAX_SHARES 16 /* also the most key files decrypting takes */
 
@@ -368,6 +376,29 @@ out:
     return ret;
 }
 
+/* Writes n bytes of key material (the pad, or the MAC key) to the key files: all to the key, or split into shares:
+ * shares 1..N-1 get fresh bytes from the sources, share N the material XOR all of them (buf is changed). Returns 0,
+ * or -1 with *failed set to the file a write failed on, or left NULL when the sources failed (message in err). */
+static int write_key_material(struct pnp_out *key, char *const *key_path, int nkeys, struct pnp_rng *rng,
+                              uint8_t *buf, size_t n, const char **failed, char *err, size_t errlen)
+{
+    for (int k = 0; k < nkeys - 1; k++) {
+        if (pnp_rng_fill(rng, buf_share, n, err, errlen) < 0)
+            return -1;
+        if (pnp_write_all(key[k].fd, buf_share, n) < 0) {
+            *failed = key_path[k];
+            return -1;
+        }
+        for (size_t i = 0; i < n; i++)
+            buf[i] ^= buf_share[i];
+    }
+    if (pnp_write_all(key[nkeys - 1].fd, buf, n) < 0) {
+        *failed = key_path[nkeys - 1];
+        return -1;
+    }
+    return 0;
+}
+
 static int encrypt(const char *in_path, const char *out_opt, char *const *key_outs, int n_key_outs, int shares,
                    int force, int verbose)
 {
@@ -376,10 +407,13 @@ static int encrypt(const char *in_path, const char *out_opt, char *const *key_ou
     const char *failed = NULL; /* the output a write failed on */
     struct pnp_out ct, key[MAX_SHARES];
     struct pnp_rng rng;
+    struct pnp_mac mac;
+    uint8_t mackey[PNP_MAC_KEY_LEN], tag[PNP_MAC_TAG_LEN];
     char err[512];
     int ret = 1, in = -1;
     struct stat st;
 
+    memset(&mac, 0, sizeof mac);
     memset(&ct, 0, sizeof ct);
     memset(key, 0, sizeof key);
     ct.fd = -1;
@@ -434,6 +468,15 @@ static int encrypt(const char *in_path, const char *out_opt, char *const *key_ou
         failed = ct_path;
         goto write_failed;
     }
+    /* the integrity check's one-time key: fresh from the sources, first in the key's body (split like the pad) */
+    do {
+        if (pnp_rng_fill(&rng, mackey, sizeof mackey, err, sizeof err) < 0)
+            goto rng_failed;
+    } while (pnp_mac_key_fix(mackey) < 0);
+    pnp_mac_init(&mac, mackey);
+    pnp_mac_feed(&mac, header + MAGIC_LEN, ID_LEN);
+    if (write_key_material(key, key_path, nkeys, &rng, mackey, sizeof mackey, &failed, err, sizeof err) < 0)
+        goto material_failed;
 
     for (;;) {
         if (pnp_stop)
@@ -446,6 +489,7 @@ static int encrypt(const char *in_path, const char *out_opt, char *const *key_ou
         }
         if (n == 0)
             break;
+        pnp_mac_feed(&mac, buf_in, (size_t)n);
         if (pnp_rng_fill(&rng, buf_pad, (size_t)n, err, sizeof err) < 0)
             goto rng_failed;
         for (ssize_t i = 0; i < n; i++)
@@ -454,21 +498,13 @@ static int encrypt(const char *in_path, const char *out_opt, char *const *key_ou
             failed = ct_path;
             goto write_failed;
         }
-        /* shares 1..N-1: fresh pads from the same sources; share N (or the whole key): the pad XOR all of them */
-        for (int k = 0; k < nkeys - 1; k++) {
-            if (pnp_rng_fill(&rng, buf_share, (size_t)n, err, sizeof err) < 0)
-                goto rng_failed;
-            if (pnp_write_all(key[k].fd, buf_share, (size_t)n) < 0) {
-                failed = key_path[k];
-                goto write_failed;
-            }
-            for (ssize_t i = 0; i < n; i++)
-                buf_pad[i] ^= buf_share[i];
-        }
-        if (pnp_write_all(key[nkeys - 1].fd, buf_pad, (size_t)n) < 0) {
-            failed = key_path[nkeys - 1];
-            goto write_failed;
-        }
+        if (write_key_material(key, key_path, nkeys, &rng, buf_pad, (size_t)n, &failed, err, sizeof err) < 0)
+            goto material_failed;
+    }
+    pnp_mac_final(&mac, tag);
+    if (pnp_write_all(ct.fd, tag, sizeof tag) < 0) {
+        failed = ct_path;
+        goto write_failed;
     }
     /* the key first: a ciphertext without its key would be lost data, a stray key is only noise */
     for (int i = 0; i < nkeys; i++) {
@@ -499,6 +535,9 @@ unplace:
     for (int i = 0; i < nkeys; i++)
         pnp_out_unplace(&key[i]);
     goto out;
+material_failed:
+    if (failed)
+        goto write_failed;
 rng_failed:
     if (!pnp_stop)
         say("%s. Nothing was written.", err);
@@ -507,6 +546,8 @@ write_failed:
     say("can't write %s: %s", failed, strerror(errno));
 out:
     wipe_buffers();
+    explicit_bzero(&mac, sizeof mac);
+    explicit_bzero(mackey, sizeof mackey);
     explicit_bzero(&rng, sizeof rng);
     pnp_rng_close(&rng);
     for (int i = 0; i < nkeys; i++) {
@@ -526,8 +567,9 @@ struct pnp_file {
     int fd;
     enum pnp_kind kind;
     uint8_t id[ID_LEN];
+    int version;    /* 1 (no integrity check) or 2 */
     int num, count; /* a share: its number (1..count) and how many there are */
-    off_t body;     /* bytes after the header */
+    off_t body;     /* the length of the plaintext it's for: its size less its header, MAC key or tag */
 };
 
 /* Opens a ciphertext (want KIND_CT) or a key or share (want KIND_KEY) and reads its header. Returns 0, or -1 after
@@ -540,9 +582,11 @@ static int open_pnp_file(const char *path, enum pnp_kind want, struct pnp_file *
     if (f->fd < 0)
         return -1;
     ssize_t n = read_some(f->fd, h, HEADER_LEN);
-    int ct = n == HEADER_LEN && memcmp(h, MAGIC_CT, MAGIC_LEN) == 0;
-    int key = n == HEADER_LEN && memcmp(h, MAGIC_KEY, MAGIC_LEN) == 0;
-    int share = n == HEADER_LEN && memcmp(h, MAGIC_SHARE, MAGIC_LEN) == 0;
+    int full = n == HEADER_LEN;
+    int ct1 = full && memcmp(h, MAGIC_CT_V1, MAGIC_LEN) == 0, key1 = full && memcmp(h, MAGIC_KEY_V1, MAGIC_LEN) == 0;
+    int ct = ct1 || (full && memcmp(h, MAGIC_CT, MAGIC_LEN) == 0);
+    int key = key1 || (full && memcmp(h, MAGIC_KEY, MAGIC_LEN) == 0);
+    int share = full && memcmp(h, MAGIC_SHARE, MAGIC_LEN) == 0;
     if (want == KIND_CT && (key || share)) {
         say("%s is a pnp %s, not a ciphertext", path, key ? "key" : "key share");
         goto fail;
@@ -557,8 +601,11 @@ static int open_pnp_file(const char *path, enum pnp_kind want, struct pnp_file *
     }
     f->kind = ct ? KIND_CT : key ? KIND_KEY : KIND_SHARE;
     memcpy(f->id, h + MAGIC_LEN, ID_LEN);
+    f->version = ct1 || key1 ? 1 : 2;
     f->num = f->count = 0;
     f->body = st.st_size - HEADER_LEN;
+    if (f->version == 2)
+        f->body -= ct ? PNP_MAC_TAG_LEN : PNP_MAC_KEY_LEN;
     if (share) {
         if (read_some(f->fd, h + HEADER_LEN, 2) != 2 || h[HEADER_LEN + 1] < 2 || h[HEADER_LEN] < 1 ||
             h[HEADER_LEN] > h[HEADER_LEN + 1]) {
@@ -568,6 +615,10 @@ static int open_pnp_file(const char *path, enum pnp_kind want, struct pnp_file *
         f->num = h[HEADER_LEN];
         f->count = h[HEADER_LEN + 1];
         f->body -= 2;
+    }
+    if (f->body < 0) {
+        say("%s is too short: it's damaged or incomplete", path);
+        goto fail;
     }
     return 0;
 fail:
@@ -582,7 +633,7 @@ static int check_keys(const char *ct_path, const struct pnp_file *ct, char *cons
                       int nk)
 {
     for (int k = 0; k < nk; k++) {
-        if (memcmp(kf[k].id, ct->id, ID_LEN) != 0) {
+        if (memcmp(kf[k].id, ct->id, ID_LEN) != 0 || kf[k].version != ct->version) {
             say("%s isn't the key for %s (they're from different encryptions)", kp[k], ct_path);
             return -1;
         }
@@ -629,10 +680,13 @@ static int decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, c
     char *kp[MAX_SHARES] = {0}, *out_path = NULL;
     struct pnp_file ct, kf[MAX_SHARES];
     struct pnp_out out;
+    struct pnp_mac mac;
+    uint8_t mackey[PNP_MAC_KEY_LEN], tag[PNP_MAC_TAG_LEN], want[PNP_MAC_TAG_LEN];
     char err[512];
     int ret = 1, nk = 0, find_shares = 0;
     struct stat st;
 
+    memset(&mac, 0, sizeof mac);
     memset(&out, 0, sizeof out);
     out.fd = -1;
     ct.fd = -1;
@@ -706,22 +760,41 @@ static int decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, c
         say("%s already exists (use -f to replace it)", out_path);
         goto out;
     }
+    int checked = ct.version >= 2;
+    if (checked) {
+        /* the MAC key: the start of the key's body, or of every share's, XORed together */
+        for (int k = 0; k < nk; k++) {
+            if (read_some(kf[k].fd, k ? buf_share : mackey, sizeof mackey) != (ssize_t)sizeof mackey) {
+                say("%s ended early or can't be read", kp[k]);
+                goto out;
+            }
+            for (size_t i = 0; k && i < sizeof mackey; i++)
+                mackey[i] ^= buf_share[i];
+        }
+        if (pnp_mac_init(&mac, mackey) < 0) {
+            say("the key for %s is damaged (its integrity check key isn't valid)", ct_path);
+            goto out;
+        }
+        pnp_mac_feed(&mac, ct.id, ID_LEN);
+    } else {
+        say("note: %s is in pnp's old format (version 001, from pnp 0.1.0-alpha.2 or older), which has no integrity "
+            "check: changes to it can't be detected",
+            ct_path);
+    }
     if (pnp_out_open(&out, out_path, 0600, err, sizeof err) < 0) {
         say("%s", err);
         goto out;
     }
-    off_t total = 0;
-    for (;;) {
+    for (off_t left = ct.body; left > 0;) {
         if (pnp_stop)
             goto out;
-        ssize_t n = read_some(ct.fd, buf_in, CHUNK);
-        if (n < 0) {
+        size_t chunk = left < CHUNK ? (size_t)left : CHUNK;
+        ssize_t n = read_some(ct.fd, buf_in, chunk);
+        if (n != (ssize_t)chunk) {
             if (!pnp_stop)
-                say("can't read %s: %s", ct_path, strerror(errno));
+                say(n < 0 ? "can't read %s" : "%s ended early or changed while pnp was reading it", ct_path);
             goto out;
         }
-        if (n == 0)
-            break;
         /* the pad: the key, or every share XORed together (in any order) */
         for (int k = 0; k < nk; k++) {
             if (read_some(kf[k].fd, k ? buf_share : buf_pad, (size_t)n) != n) {
@@ -734,15 +807,30 @@ static int decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, c
         }
         for (ssize_t i = 0; i < n; i++)
             buf_out[i] = buf_in[i] ^ buf_pad[i];
+        if (checked)
+            pnp_mac_feed(&mac, buf_out, (size_t)n);
         if (pnp_write_all(out.fd, buf_out, (size_t)n) < 0) {
             say("can't write %s: %s", out_path, strerror(errno));
             goto out;
         }
-        total += n;
+        left -= n;
     }
-    for (int k = 0; k < nk; k++) {
-        if (total != ct.body || read_some(kf[k].fd, buf_pad, 1) != 0) {
-            say("%s or %s changed while pnp was reading them", ct_path, kp[k]);
+    if (checked && read_some(ct.fd, want, sizeof want) != (ssize_t)sizeof want) {
+        say("%s ended early or changed while pnp was reading it", ct_path);
+        goto out;
+    }
+    for (int k = -1; k < nk; k++) {
+        if (read_some(k < 0 ? ct.fd : kf[k].fd, buf_pad, 1) != 0) {
+            say("%s changed while pnp was reading it", k < 0 ? ct_path : kp[k]);
+            goto out;
+        }
+    }
+    /* the output is still a hidden part file: it takes its real name only if the integrity check passes */
+    if (checked) {
+        pnp_mac_final(&mac, tag);
+        if (pnp_mac_tag_cmp(tag, want) != 0) {
+            say("%s or its key has been changed or damaged: the integrity check failed. Nothing was written.",
+                ct_path);
             goto out;
         }
     }
@@ -759,6 +847,8 @@ oom:
     say("out of memory");
 out:
     wipe_buffers();
+    explicit_bzero(&mac, sizeof mac);
+    explicit_bzero(mackey, sizeof mackey);
     pnp_out_discard(&out);
     if (ct.fd >= 0)
         close(ct.fd);

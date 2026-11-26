@@ -133,8 +133,13 @@ With
 .BR \-f ,
 if the ciphertext can't be saved after its key (or shares) were, they are removed again; an older key it replaced is then gone.
 .PP
-A one-time pad hides the contents but doesn't detect changes: a modified ciphertext decrypts to modified data without
-any error. The ciphertext and key do record which encryption they belong to, so a wrong key is refused.
+A one-time pad hides the contents but doesn't detect changes, so
+.B pnp
+adds a one-time MAC (Wegman\-Carter, mod 2^127\-1), keyed by 32 more random bytes from the hardware sources kept in
+the key, with its tag at the end of the ciphertext. Like the pad, it can't be forged with any amount of computing
+power. If the ciphertext or the key has been changed or damaged, decrypting fails and nothing is written. Files from
+pnp 0.1.0\-alpha.2 or older have no MAC; they still decrypt, with a note saying so. The ciphertext and key also
+record which encryption they belong to, so a wrong key is refused.
 .PP
 The key is as large as the file. Losing the key means losing the file.
 .SH EXIT STATUS

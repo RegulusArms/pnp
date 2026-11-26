@@ -125,13 +125,17 @@ pnp writes each output under a hidden temporary name and renames it into place o
 a full disk or Ctrl-C never leaves half a file behind. The key is created readable by you only. `man pnp` has the
 details, and [docs/format.md](docs/format.md) describes the file format.
 
-**pnp doesn't detect tampering.** A one-time pad hides what's in a file but can't tell whether the ciphertext was
-changed: a modified `.pnp` file decrypts to modified data without an error.
+**pnp detects tampering and damage.** Every encryption also gets a one-time MAC, keyed by 32 more hardware-random
+bytes kept in the key: like the pad, it can't be forged with any amount of computing power (HMAC or a hash
+couldn't promise that if P = NP). If the `.pnp` file, or the key, has been changed or damaged by even one bit,
+decrypting fails and writes nothing. Files made by pnp 0.1.0-alpha.2 or older have no such check; pnp still
+decrypts them and says so.
 
 ## Keeping your keys
 
 A one-time pad moves the whole problem of secrecy onto the key: the ciphertext is safe anywhere, the key has to
-be guarded. Some rules:
+be guarded. [docs/code-cylinder.md](docs/code-cylinder.md) walks through setting up a key drive to carry.
+Some rules:
 
 - **Guard keys physically, not with more encryption.** An AES-encrypted drive, a password manager or a cloud
   account is only as strong as the very ciphers P = NP would break. A USB stick in a drawer, a safe or a bank
@@ -201,3 +205,15 @@ amount of computing power.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Documentation
+
+| Document | What's in it |
+|---|---|
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
+| [docs/code-cylinder.md](docs/code-cylinder.md) | Setting up a key drive (an external hard disk) to carry with you, and why pnp relies on physical security |
+| [docs/format.md](docs/format.md) | The file formats (ciphertext, key, key shares), and how to decrypt without pnp |
+| [man/pnp.1](man/pnp.1) | The manual page (`man pnp` once installed) |
+| [TODO.md](TODO.md) | Planned work |
+| [LICENSE](LICENSE) | The MIT license |
+| [pnp.regulusarms.com](https://pnp.regulusarms.com) | The install page and apt repository |

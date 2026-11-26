@@ -25,8 +25,8 @@ HARDEN_LD := -pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack
 ALL_CFLAGS := $(WARN) $(HARDEN) $(CFLAGS) -DPNP_VERSION='"$(VERSION)"'
 ALL_LDFLAGS := $(HARDEN_LD) $(LDFLAGS)
 
-SRC := src/main.c src/rng.c src/fileio.c
-HDR := src/rng.h src/fileio.h
+SRC := src/main.c src/rng.c src/fileio.c src/mac.c
+HDR := src/rng.h src/fileio.h src/mac.h
 
 .PHONY: all test install install-udev uninstall deb clean
 
@@ -45,10 +45,13 @@ build/pnp-test: $(SRC) $(HDR) VERSION | build
 build/test_health: tests/test_health.c src/rng.c src/rng.h | build
 	$(CC) $(ALL_CFLAGS) -DPNP_TEST -Isrc -o $@ tests/test_health.c src/rng.c $(ALL_LDFLAGS)
 
+build/test_mac: tests/test_mac.c src/mac.c src/mac.h | build
+	$(CC) $(ALL_CFLAGS) -Isrc -o $@ tests/test_mac.c src/mac.c $(ALL_LDFLAGS)
+
 build/xorcheck: tests/xorcheck.c | build
 	$(CC) $(ALL_CFLAGS) -o $@ tests/xorcheck.c $(ALL_LDFLAGS)
 
-test: build/pnp build/pnp-test build/test_health build/xorcheck
+test: build/pnp build/pnp-test build/test_health build/test_mac build/xorcheck
 	tests/run.sh
 
 install: build/pnp
