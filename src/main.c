@@ -11,10 +11,14 @@
  * --key-out writes the key straight into another folder (a USB stick, say), so it never touches the internal disk.
  * --shares N writes the key as N shares instead of one key file: shares 1..N-1 are fresh hardware-random pads and
  * share N is pad XOR all of them. Any N-1 shares are uniformly random whatever the pad is, so they reveal nothing
- * (information-theoretically, like the pad itself); all N XORed together give the pad back. */
+ * (information-theoretically, like the pad itself); all N XORed together give the pad back.
+ * --protect also encrypts the key (or each share) under a passphrase (protect.c): only computationally secure, an
+ * extra hurdle for whoever steals a key file, not part of the P = NP guarantee. --gen-passphrase makes a passphrase
+ * of words from the EFF large word list, chosen with the same random sources as the pad. */
 #define _GNU_SOURCE
 #include "fileio.h"
 #include "mac.h"
+#include "protect.h"
 #include "rng.h"
 
 #include <errno.h>
@@ -48,6 +52,9 @@
 static const char MAGIC_CT[MAGIC_LEN] = {'P', 'N', 'P', 'C', 'T', '0', '0', '2'};
 static const char MAGIC_KEY[MAGIC_LEN] = {'P', 'N', 'P', 'K', 'Y', '0', '0', '2'};
 static const char MAGIC_SHARE[MAGIC_LEN] = {'P', 'N', 'P', 'S', 'H', '0', '0', '2'};
+/* a key or share protected with a passphrase (--protect): the protection block (PNP_PROTECT_LEN) follows the header */
+static const char MAGIC_KEY_P[MAGIC_LEN] = {'P', 'N', 'P', 'K', 'P', '0', '0', '2'};
+static const char MAGIC_SHARE_P[MAGIC_LEN] = {'P', 'N', 'P', 'S', 'P', '0', '0', '2'};
 static const char MAGIC_CT_V1[MAGIC_LEN] = {'P', 'N', 'P', 'C', 'T', '0', '0', '1'};
 static const char MAGIC_KEY_V1[MAGIC_LEN] = {'P', 'N', 'P', 'K', 'Y', '0', '0', '1'};
 
@@ -59,6 +66,7 @@ extern volatile sig_atomic_t pnp_stop;
 
 /* plaintext, pad, output and share buffers: locked in RAM where allowed (never swapped) and wiped after use */
 static uint8_t buf_in[CHUNK], buf_pad[CHUNK], buf_out[CHUNK], buf_share[CHUNK];
+static char pass[PNP_PASS_MAX]; /* the passphrase (--protect): locked and wiped the same way */
 
 static int quiet;
 
@@ -68,6 +76,7 @@ static void wipe_buffers(void)
     explicit_bzero(buf_pad, sizeof buf_pad);
     explicit_bzero(buf_out, sizeof buf_out);
     explicit_bzero(buf_share, sizeof buf_share);
+    explicit_bzero(pass, sizeof pass);
 }
 
 static void on_signal(int sig) { pnp_stop = sig; }
@@ -89,6 +98,7 @@ static void setup_process(void)
     mlock(buf_pad, sizeof buf_pad);
     mlock(buf_out, sizeof buf_out);
     mlock(buf_share, sizeof buf_share);
+    mlock(pass, sizeof pass);
 }
 
 /* after cleaning up, die of the signal that stopped us, so the shell sees it */
@@ -115,11 +125,12 @@ static void say(const char *fmt, ...)
 static void usage(FILE *f)
 {
     fprintf(f,
-            "usage: pnp [-f] [-q] [-o OUT] [--key-out PATH] [--shares N] FILE\n"
+            "usage: pnp [-f] [-q] [-o OUT] [--key-out PATH] [--shares N] [--protect] FILE\n"
             "                                    encrypt FILE to FILE.pnp and its key FILE.pnp.key\n"
             "       pnp -d [-f] [-q] [-k KEY]... [-o OUT] FILE.pnp\n"
             "                                    decrypt FILE.pnp with FILE.pnp.key (or its shares) to FILE\n"
             "       pnp --sources                list the hardware random sources and whether they're usable\n"
+            "       pnp --gen-passphrase[=WORDS] print a random passphrase (7 words unless WORDS, 5-20)\n"
             "\n"
             "  -d, --decrypt   decrypt instead of encrypting\n"
             "  -k, --key KEY   the key file to decrypt with (default: FILE.pnp.key, or FILE.pnp.key.1, .2...);\n"
@@ -129,13 +140,18 @@ static void usage(FILE *f)
             "      --key-out PATH  write the key straight into this folder (or to this file name) instead of\n"
             "                  beside the ciphertext; with --shares, once for all shares or once per share\n"
             "      --shares N  split the key into N shares (2-16), all of them needed to decrypt\n"
+            "      --protect   also encrypt the key (or each share) under a passphrase, so a stolen key file\n"
+            "                  is slow to use. Computationally secure only: not part of pnp's P = NP guarantee\n"
+            "      --kdf-memory MIB  memory each passphrase guess costs, for --protect (default %d, %d-%d)\n"
+            "      --passphrase-file FILE  read the passphrase from FILE's first line instead of the terminal\n"
             "  -f, --force     replace output files that already exist\n"
             "  -q, --quiet     don't print which random sources made the pad\n"
             "  -v, --verbose   print every random source and its state\n"
             "  -V, --version   print the version\n"
             "  -h, --help      print this help\n"
             "\n"
-            "Keep the key secret, away from the ciphertext, and never use it for anything else.\n");
+            "Keep the key secret, away from the ciphertext, and never use it for anything else.\n",
+            PNP_PROTECT_MIB, PNP_PROTECT_MIB_MIN, PNP_PROTECT_MIB_MAX);
 }
 
 /* How to fix /dev/hwrng being unreadable, for this user's situation. */
@@ -197,8 +213,9 @@ static int hwrng_denied(const struct pnp_rng *rng)
     return 0;
 }
 
-/* opens the hardware sources; returns -1 (after explaining) if none can be used */
-static int open_sources(struct pnp_rng *rng, int verbose)
+/* opens the hardware sources for making what (a pad, a passphrase); returns -1 (after explaining) if none can be
+ * used */
+static int open_sources(struct pnp_rng *rng, int verbose, const char *what)
 {
     pnp_rng_open(rng);
     if (verbose) {
@@ -206,8 +223,9 @@ static int open_sources(struct pnp_rng *rng, int verbose)
         list_sources(rng, stderr);
     }
     if (rng->hardware_ok == 0) {
-        say("no usable hardware random source, so pnp won't encrypt: a one-time pad from software randomness "
-            "alone isn't safe if P = NP.");
+        say("no usable hardware random source, so pnp won't make a %s: a one-time pad from software randomness "
+            "alone isn't safe if P = NP.",
+            what);
         if (!verbose)
             list_sources(rng, stderr);
         if (hwrng_denied(rng))
@@ -217,7 +235,7 @@ static int open_sources(struct pnp_rng *rng, int verbose)
     if (!quiet) {
         char desc[256];
         pnp_rng_describe(rng, desc, sizeof desc);
-        say("pad from %s", desc);
+        say("%s from %s", what, desc);
         if (hwrng_denied(rng)) {
             say("note: /dev/hwrng isn't used (permission denied)");
             explain_denied();
@@ -377,21 +395,27 @@ out:
 }
 
 /* Writes n bytes of key material (the pad, or the MAC key) to the key files: all to the key, or split into shares:
- * shares 1..N-1 get fresh bytes from the sources, share N the material XOR all of them (buf is changed). Returns 0,
+ * shares 1..N-1 get fresh bytes from the sources, share N the material XOR all of them (buf is changed). With
+ * --protect (wrap not NULL), each file's bytes are XORed with its ChaCha20 keystream as they're written. Returns 0,
  * or -1 with *failed set to the file a write failed on, or left NULL when the sources failed (message in err). */
 static int write_key_material(struct pnp_out *key, char *const *key_path, int nkeys, struct pnp_rng *rng,
-                              uint8_t *buf, size_t n, const char **failed, char *err, size_t errlen)
+                              struct pnp_chacha20 *wrap, uint8_t *buf, size_t n, const char **failed, char *err,
+                              size_t errlen)
 {
     for (int k = 0; k < nkeys - 1; k++) {
         if (pnp_rng_fill(rng, buf_share, n, err, errlen) < 0)
             return -1;
+        for (size_t i = 0; i < n; i++)
+            buf[i] ^= buf_share[i];
+        if (wrap)
+            pnp_chacha20_xor(&wrap[k], buf_share, n);
         if (pnp_write_all(key[k].fd, buf_share, n) < 0) {
             *failed = key_path[k];
             return -1;
         }
-        for (size_t i = 0; i < n; i++)
-            buf[i] ^= buf_share[i];
     }
+    if (wrap)
+        pnp_chacha20_xor(&wrap[nkeys - 1], buf, n);
     if (pnp_write_all(key[nkeys - 1].fd, buf, n) < 0) {
         *failed = key_path[nkeys - 1];
         return -1;
@@ -399,8 +423,18 @@ static int write_key_material(struct pnp_out *key, char *const *key_path, int nk
     return 0;
 }
 
+/* --protect and its settings */
+struct protect_opts {
+    int on;
+    uint32_t mib;          /* Argon2id memory */
+    const char *passfile;  /* NULL: ask on the terminal */
+};
+
+/* the memory the passphrase hashing takes, for messages */
+static uint32_t kdf_mib(const struct pnp_protect *p) { return p->argon_kib / 1024; }
+
 static int encrypt(const char *in_path, const char *out_opt, char *const *key_outs, int n_key_outs, int shares,
-                   int force, int verbose)
+                   int force, int verbose, const struct protect_opts *po)
 {
     int nkeys = shares ? shares : 1; /* key files: the key, or its shares */
     char *ct_path = NULL, *key_path[MAX_SHARES] = {0};
@@ -408,12 +442,15 @@ static int encrypt(const char *in_path, const char *out_opt, char *const *key_ou
     struct pnp_out ct, key[MAX_SHARES];
     struct pnp_rng rng;
     struct pnp_mac mac;
-    uint8_t mackey[PNP_MAC_KEY_LEN], tag[PNP_MAC_TAG_LEN];
+    struct pnp_protect prot;
+    struct pnp_chacha20 wrap[MAX_SHARES];
+    uint8_t mackey[PNP_MAC_KEY_LEN], tag[PNP_MAC_TAG_LEN], wkey[32], pblock[PNP_PROTECT_LEN];
     char err[512];
     int ret = 1, in = -1;
     struct stat st;
 
     memset(&mac, 0, sizeof mac);
+    memset(wrap, 0, sizeof wrap);
     memset(&ct, 0, sizeof ct);
     memset(key, 0, sizeof key);
     ct.fd = -1;
@@ -435,8 +472,38 @@ static int encrypt(const char *in_path, const char *out_opt, char *const *key_ou
     memcpy(all + 1, key_path, (size_t)nkeys * sizeof *all);
     if (check_outputs(all, nkeys + 1, &st, force) < 0)
         goto out;
-    if (open_sources(&rng, verbose) < 0)
+    if (open_sources(&rng, verbose, "pad") < 0)
         goto out;
+    if (po->on) {
+        if ((uint64_t)st.st_size + PNP_MAC_KEY_LEN > PNP_PROTECT_MAX_BYTES) {
+            say("--protect works for files up to 256 GiB");
+            goto out;
+        }
+        long plen = pnp_read_passphrase(po->passfile, !po->passfile, pass, sizeof pass, err, sizeof err);
+        if (plen < 0) {
+            if (!pnp_stop)
+                say("%s", err);
+            goto out;
+        }
+        if (!quiet && plen < 20)
+            say("note: a short passphrase can be guessed however slow each guess is; for a strong one, run: pnp "
+                "--gen-passphrase");
+        if (pnp_protect_new(&prot, po->mib) < 0) {
+            say("getrandom: %s", strerror(errno));
+            goto out;
+        }
+        if (!quiet)
+            say("protecting the key with the passphrase (Balloon and Argon2id, %u MiB)...", kdf_mib(&prot));
+        if (pnp_protect_lock(&prot, pass, (size_t)plen, wkey) < 0) {
+            say("can't get the %u MiB of memory --protect needs (choose less with --kdf-memory)", kdf_mib(&prot));
+            goto out;
+        }
+        explicit_bzero(pass, sizeof pass);
+        pnp_protect_encode(&prot, pblock);
+        for (int i = 0; i < nkeys; i++)
+            pnp_protect_stream(&wrap[i], wkey, shares ? i + 1 : 0);
+        explicit_bzero(wkey, sizeof wkey);
+    }
 
     uint8_t header[SHARE_HEADER_LEN];
     if (getrandom(header + MAGIC_LEN, ID_LEN, 0) != ID_LEN) {
@@ -455,10 +522,11 @@ static int encrypt(const char *in_path, const char *out_opt, char *const *key_ou
         goto out;
     }
     for (int i = 0; i < nkeys; i++) {
-        memcpy(header, shares ? MAGIC_SHARE : MAGIC_KEY, MAGIC_LEN);
+        memcpy(header, shares ? (po->on ? MAGIC_SHARE_P : MAGIC_SHARE) : po->on ? MAGIC_KEY_P : MAGIC_KEY, MAGIC_LEN);
         header[HEADER_LEN] = (uint8_t)(i + 1);
         header[HEADER_LEN + 1] = (uint8_t)nkeys;
-        if (pnp_write_all(key[i].fd, header, shares ? SHARE_HEADER_LEN : HEADER_LEN) < 0) {
+        if (pnp_write_all(key[i].fd, header, shares ? SHARE_HEADER_LEN : HEADER_LEN) < 0 ||
+            (po->on && pnp_write_all(key[i].fd, pblock, sizeof pblock) < 0)) {
             failed = key_path[i];
             goto write_failed;
         }
@@ -475,7 +543,8 @@ static int encrypt(const char *in_path, const char *out_opt, char *const *key_ou
     } while (pnp_mac_key_fix(mackey) < 0);
     pnp_mac_init(&mac, mackey);
     pnp_mac_feed(&mac, header + MAGIC_LEN, ID_LEN);
-    if (write_key_material(key, key_path, nkeys, &rng, mackey, sizeof mackey, &failed, err, sizeof err) < 0)
+    if (write_key_material(key, key_path, nkeys, &rng, po->on ? wrap : NULL, mackey, sizeof mackey, &failed, err,
+                           sizeof err) < 0)
         goto material_failed;
 
     for (;;) {
@@ -498,7 +567,8 @@ static int encrypt(const char *in_path, const char *out_opt, char *const *key_ou
             failed = ct_path;
             goto write_failed;
         }
-        if (write_key_material(key, key_path, nkeys, &rng, buf_pad, (size_t)n, &failed, err, sizeof err) < 0)
+        if (write_key_material(key, key_path, nkeys, &rng, po->on ? wrap : NULL, buf_pad, (size_t)n, &failed, err,
+                               sizeof err) < 0)
             goto material_failed;
     }
     pnp_mac_final(&mac, tag);
@@ -521,10 +591,11 @@ static int encrypt(const char *in_path, const char *out_opt, char *const *key_ou
     for (int i = 0; i < nkeys; i++)
         pnp_sync_dir(key_path[i]);
     if (!quiet && !shares) {
-        say("wrote %s and %s. Keep the key secret and apart from the .pnp file.", ct_path, key_path[0]);
+        say("wrote %s and %s%s. Keep the key secret and apart from the .pnp file.", ct_path, key_path[0],
+            po->on ? " (protected with the passphrase)" : "");
     } else if (!quiet) {
-        say("wrote %s, and its key as %d shares. All of them are needed to decrypt: keep them in different places.",
-            ct_path, nkeys);
+        say("wrote %s, and its key as %d shares%s. All of them are needed to decrypt: keep them in different places.",
+            ct_path, nkeys, po->on ? " (each protected with the passphrase)" : "");
         for (int i = 0; i < nkeys; i++)
             fprintf(stderr, "  %s\n", key_path[i]);
     }
@@ -548,6 +619,8 @@ out:
     wipe_buffers();
     explicit_bzero(&mac, sizeof mac);
     explicit_bzero(mackey, sizeof mackey);
+    explicit_bzero(wkey, sizeof wkey);
+    explicit_bzero(wrap, sizeof wrap);
     explicit_bzero(&rng, sizeof rng);
     pnp_rng_close(&rng);
     for (int i = 0; i < nkeys; i++) {
@@ -570,6 +643,8 @@ struct pnp_file {
     int version;    /* 1 (no integrity check) or 2 */
     int num, count; /* a share: its number (1..count) and how many there are */
     off_t body;     /* the length of the plaintext it's for: its size less its header, MAC key or tag */
+    int prot;       /* protected with a passphrase (--protect): pp holds its settings */
+    struct pnp_protect pp;
 };
 
 /* Opens a ciphertext (want KIND_CT) or a key or share (want KIND_KEY) and reads its header. Returns 0, or -1 after
@@ -585,8 +660,9 @@ static int open_pnp_file(const char *path, enum pnp_kind want, struct pnp_file *
     int full = n == HEADER_LEN;
     int ct1 = full && memcmp(h, MAGIC_CT_V1, MAGIC_LEN) == 0, key1 = full && memcmp(h, MAGIC_KEY_V1, MAGIC_LEN) == 0;
     int ct = ct1 || (full && memcmp(h, MAGIC_CT, MAGIC_LEN) == 0);
-    int key = key1 || (full && memcmp(h, MAGIC_KEY, MAGIC_LEN) == 0);
-    int share = full && memcmp(h, MAGIC_SHARE, MAGIC_LEN) == 0;
+    int keyp = full && memcmp(h, MAGIC_KEY_P, MAGIC_LEN) == 0, sharep = full && memcmp(h, MAGIC_SHARE_P, MAGIC_LEN) == 0;
+    int key = key1 || keyp || (full && memcmp(h, MAGIC_KEY, MAGIC_LEN) == 0);
+    int share = sharep || (full && memcmp(h, MAGIC_SHARE, MAGIC_LEN) == 0);
     if (want == KIND_CT && (key || share)) {
         say("%s is a pnp %s, not a ciphertext", path, key ? "key" : "key share");
         goto fail;
@@ -615,6 +691,20 @@ static int open_pnp_file(const char *path, enum pnp_kind want, struct pnp_file *
         f->num = h[HEADER_LEN];
         f->count = h[HEADER_LEN + 1];
         f->body -= 2;
+    }
+    f->prot = keyp || sharep;
+    if (f->prot) {
+        uint8_t pb[PNP_PROTECT_LEN];
+        if (read_some(f->fd, pb, sizeof pb) != (ssize_t)sizeof pb) {
+            say("%s is too short: it's damaged or incomplete", path);
+            goto fail;
+        }
+        if (pnp_protect_decode(&f->pp, pb) < 0) {
+            say("%s asks for passphrase settings pnp doesn't accept: it's damaged, or from a newer version of pnp",
+                path);
+            goto fail;
+        }
+        f->body -= PNP_PROTECT_LEN;
     }
     if (f->body < 0) {
         say("%s is too short: it's damaged or incomplete", path);
@@ -675,18 +765,62 @@ static int check_keys(const char *ct_path, const struct pnp_file *ct, char *cons
     return 0;
 }
 
-static int decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, const char *out_opt, int force)
+/* For keys protected with --protect: asks for the passphrase once, unlocks each (once for all the shares of one
+ * encryption: they share their settings and salt) and starts its keystream in wrap[k]. -1 after saying why. */
+static int unlock_keys(char *const *kp, const struct pnp_file *kf, int nk, const char *passfile,
+                       struct pnp_chacha20 *wrap)
+{
+    uint8_t wkey[32];
+    char err[512];
+    const struct pnp_protect *done = NULL; /* the settings wkey was made from */
+    long plen = -1;
+    int ret = -1;
+    for (int k = 0; k < nk; k++) {
+        if (!kf[k].prot)
+            continue;
+        if (plen < 0 && (plen = pnp_read_passphrase(passfile, 0, pass, sizeof pass, err, sizeof err)) < 0) {
+            if (!pnp_stop)
+                say("%s", err);
+            goto out;
+        }
+        if (!done || memcmp(&kf[k].pp, done, sizeof *done) != 0) {
+            if (!quiet)
+                say("unlocking the key with the passphrase (Balloon and Argon2id, %u MiB)...", kdf_mib(&kf[k].pp));
+            int r = pnp_protect_unlock(&kf[k].pp, pass, (size_t)plen, wkey);
+            if (r == -1) {
+                say("can't get the %u MiB of memory unlocking %s needs", kdf_mib(&kf[k].pp), kp[k]);
+                goto out;
+            }
+            if (r == -2) {
+                say("wrong passphrase for %s (or the key is damaged). Nothing was written.", kp[k]);
+                goto out;
+            }
+            done = &kf[k].pp;
+        }
+        pnp_protect_stream(&wrap[k], wkey, kf[k].kind == KIND_SHARE ? kf[k].num : 0);
+    }
+    ret = 0;
+out:
+    explicit_bzero(pass, sizeof pass);
+    explicit_bzero(wkey, sizeof wkey);
+    return ret;
+}
+
+static int decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, const char *out_opt, int force,
+                   const char *passfile)
 {
     char *kp[MAX_SHARES] = {0}, *out_path = NULL;
     struct pnp_file ct, kf[MAX_SHARES];
     struct pnp_out out;
     struct pnp_mac mac;
+    struct pnp_chacha20 wrap[MAX_SHARES];
     uint8_t mackey[PNP_MAC_KEY_LEN], tag[PNP_MAC_TAG_LEN], want[PNP_MAC_TAG_LEN];
     char err[512];
     int ret = 1, nk = 0, find_shares = 0;
     struct stat st;
 
     memset(&mac, 0, sizeof mac);
+    memset(wrap, 0, sizeof wrap);
     memset(&out, 0, sizeof out);
     out.fd = -1;
     ct.fd = -1;
@@ -760,6 +894,8 @@ static int decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, c
         say("%s already exists (use -f to replace it)", out_path);
         goto out;
     }
+    if (unlock_keys(kp, kf, nk, passfile, wrap) < 0)
+        goto out;
     int checked = ct.version >= 2;
     if (checked) {
         /* the MAC key: the start of the key's body, or of every share's, XORed together */
@@ -768,6 +904,8 @@ static int decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, c
                 say("%s ended early or can't be read", kp[k]);
                 goto out;
             }
+            if (kf[k].prot)
+                pnp_chacha20_xor(&wrap[k], k ? buf_share : mackey, sizeof mackey);
             for (size_t i = 0; k && i < sizeof mackey; i++)
                 mackey[i] ^= buf_share[i];
         }
@@ -802,6 +940,8 @@ static int decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, c
                     say("%s ended early or can't be read", kp[k]);
                 goto out;
             }
+            if (kf[k].prot)
+                pnp_chacha20_xor(&wrap[k], k ? buf_share : buf_pad, (size_t)n);
             for (ssize_t i = 0; k && i < n; i++)
                 buf_pad[i] ^= buf_share[i];
         }
@@ -849,6 +989,7 @@ out:
     wipe_buffers();
     explicit_bzero(&mac, sizeof mac);
     explicit_bzero(mackey, sizeof mackey);
+    explicit_bzero(wrap, sizeof wrap);
     pnp_out_discard(&out);
     if (ct.fd >= 0)
         close(ct.fd);
@@ -861,18 +1002,76 @@ out:
     return ret;
 }
 
+/* The EFF large word list (data/eff_large_wordlist.txt, CC BY 3.0 US), made into "word", lines by the Makefile:
+ * 7776 = 6^5 words, so each is log2(7776) = 12.9 bits. */
+static const char *const WORDS[] = {
+#include "wordlist.h"
+};
+#define NWORDS 7776
+_Static_assert(sizeof WORDS / sizeof *WORDS == NWORDS, "the EFF large word list has 7776 words");
+
+/* prints n words, each chosen uniformly from the sources the pad would come from */
+static int gen_passphrase(int n, int verbose)
+{
+    struct pnp_rng rng;
+    char err[512];
+    int ret = 1;
+    memset(&rng, 0, sizeof rng);
+    if (open_sources(&rng, verbose, "passphrase") < 0)
+        goto out;
+    for (int i = 0; i < n; i++) {
+        uint8_t b[2];
+        unsigned v;
+        do { /* uniform: 2 random bytes, redrawn above the largest multiple of 7776 (62208) */
+            if (pnp_rng_fill(&rng, b, sizeof b, err, sizeof err) < 0) {
+                say("%s", err);
+                goto out;
+            }
+            v = (unsigned)b[0] << 8 | b[1];
+        } while (v >= 65536 / NWORDS * NWORDS);
+        printf("%s%s", i ? " " : "", WORDS[v % NWORDS]);
+    }
+    printf("\n");
+    fflush(stdout);
+    if (!quiet)
+        say("%d words from a list of %d: about %d bits. Write it down somewhere safe, away from the key.", n, NWORDS,
+            n * 1292 / 100);
+    ret = 0;
+out:
+    explicit_bzero(&rng, sizeof rng);
+    pnp_rng_close(&rng);
+    return ret;
+}
+
+static int parse_int(const char *opt, const char *s, long lo, long hi, long *v)
+{
+    char *end;
+    errno = 0;
+    *v = strtol(s, &end, 10);
+    if (errno || *end || end == s || *v < lo || *v > hi) {
+        say("%s takes a number from %ld to %ld", opt, lo, hi);
+        return -1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    enum { OPT_SOURCES = 256, OPT_KEY_OUT, OPT_SHARES };
+    enum { OPT_SOURCES = 256, OPT_KEY_OUT, OPT_SHARES, OPT_PROTECT, OPT_KDF_MEMORY, OPT_PASSFILE, OPT_GEN };
     static const struct option opts[] = {
         {"decrypt", no_argument, NULL, 'd'},         {"key", required_argument, NULL, 'k'},
         {"output", required_argument, NULL, 'o'},    {"force", no_argument, NULL, 'f'},
         {"quiet", no_argument, NULL, 'q'},           {"verbose", no_argument, NULL, 'v'},
         {"version", no_argument, NULL, 'V'},         {"help", no_argument, NULL, 'h'},
         {"sources", no_argument, NULL, OPT_SOURCES}, {"key-out", required_argument, NULL, OPT_KEY_OUT},
-        {"shares", required_argument, NULL, OPT_SHARES}, {NULL, 0, NULL, 0},
+        {"shares", required_argument, NULL, OPT_SHARES}, {"protect", no_argument, NULL, OPT_PROTECT},
+        {"kdf-memory", required_argument, NULL, OPT_KDF_MEMORY},
+        {"passphrase-file", required_argument, NULL, OPT_PASSFILE},
+        {"gen-passphrase", optional_argument, NULL, OPT_GEN}, {NULL, 0, NULL, 0},
     };
-    int dec = 0, force = 0, verbose = 0, sources = 0, shares = 0, nkeys = 0, nkey_outs = 0, c;
+    int dec = 0, force = 0, verbose = 0, sources = 0, shares = 0, nkeys = 0, nkey_outs = 0, gen = 0, kdf_set = 0, c;
+    struct protect_opts po = {0, PNP_PROTECT_MIB, NULL};
+    long v;
     char *keys[MAX_SHARES], *key_outs[MAX_SHARES];
     const char *out_opt = NULL;
 
@@ -893,17 +1092,24 @@ int main(int argc, char **argv)
             }
             key_outs[nkey_outs++] = optarg;
             break;
-        case OPT_SHARES: {
-            char *end;
-            errno = 0;
-            long v = strtol(optarg, &end, 10);
-            if (errno || *end || end == optarg || v < 2 || v > MAX_SHARES) {
-                say("--shares takes a number from 2 to %d", MAX_SHARES);
+        case OPT_SHARES:
+            if (parse_int("--shares", optarg, 2, MAX_SHARES, &v) < 0)
                 return 2;
-            }
             shares = (int)v;
             break;
-        }
+        case OPT_PROTECT: po.on = 1; break;
+        case OPT_KDF_MEMORY:
+            if (parse_int("--kdf-memory", optarg, PNP_PROTECT_MIB_MIN, PNP_PROTECT_MIB_MAX, &v) < 0)
+                return 2;
+            po.mib = (uint32_t)v;
+            kdf_set = 1;
+            break;
+        case OPT_PASSFILE: po.passfile = optarg; break;
+        case OPT_GEN:
+            if (parse_int("--gen-passphrase", optarg ? optarg : "7", 5, 20, &v) < 0)
+                return 2;
+            gen = (int)v;
+            break;
         case 'o': out_opt = optarg; break;
         case 'f': force = 1; break;
         case 'q': quiet = 1; break;
@@ -915,6 +1121,15 @@ int main(int argc, char **argv)
         }
     }
     setup_process();
+    if (gen) {
+        if (optind != argc) {
+            usage(stderr);
+            return 2;
+        }
+        int ret = gen_passphrase(gen, verbose);
+        exit_for_signal();
+        return ret;
+    }
     if (sources) {
         struct pnp_rng rng;
         pnp_rng_open(&rng);
@@ -937,12 +1152,17 @@ int main(int argc, char **argv)
         say("-k is for decrypting (to choose where the key is written, use --key-out)");
         return 2;
     }
-    if (dec && (nkey_outs || shares)) {
-        say("--key-out and --shares are for encrypting (to name the key or its shares when decrypting, use -k)");
+    if (dec && (nkey_outs || shares || po.on || kdf_set)) {
+        say("--key-out, --shares, --protect and --kdf-memory are for encrypting (decrypting finds out from the key "
+            "whether it's protected; to name the key or its shares, use -k)");
         return 2;
     }
-    int ret = dec ? decrypt(argv[optind], keys, nkeys, out_opt, force)
-                  : encrypt(argv[optind], out_opt, key_outs, nkey_outs, shares, force, verbose);
+    if (!dec && !po.on && (kdf_set || po.passfile)) {
+        say("--kdf-memory and --passphrase-file go with --protect");
+        return 2;
+    }
+    int ret = dec ? decrypt(argv[optind], keys, nkeys, out_opt, force, po.passfile)
+                  : encrypt(argv[optind], out_opt, key_outs, nkey_outs, shares, force, verbose, &po);
     exit_for_signal();
     return ret;
 }

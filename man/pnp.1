@@ -12,6 +12,11 @@ pnp \- one-time pad file encryption that stays secure even if P = NP
 .IR PATH ]...
 .RB [ \-\-shares
 .IR N ]
+.RB [ \-\-protect
+.RB [ \-\-kdf\-memory
+.IR MIB ]
+.RB [ \-\-passphrase\-file
+.IR FILE ]]
 .I FILE
 .br
 .B pnp \-d
@@ -21,9 +26,13 @@ pnp \- one-time pad file encryption that stays secure even if P = NP
 .IR KEY ]...
 .RB [ \-o
 .IR OUT ]
+.RB [ \-\-passphrase\-file
+.IR FILE ]
 .I FILE.pnp
 .br
 .B pnp \-\-sources
+.br
+.BR pnp " " \-\-gen\-passphrase [=\fIWORDS\fR]
 .SH DESCRIPTION
 .B pnp
 encrypts any file with a one-time pad: a key of random bytes exactly as long as the file, combined with it by XOR.
@@ -93,6 +102,32 @@ shares (2 to 16) instead of one key file:
 Shares 1 to N\-1 are fresh pads from the hardware sources and share N is the pad XOR all of them, so any N\-1
 shares reveal nothing about the key, and all N are needed to decrypt. Losing one share loses the file.
 .TP
+.B \-\-protect
+Also lock the key (or each share) with a passphrase, asked for twice on the terminal. Decrypting sees that a key is
+locked and asks for the passphrase. The passphrase goes through Balloon (BLAKE2b) and then Argon2id, two
+memory-hard password hashes, and the result encrypts the key with ChaCha20, so every guess costs the
+.B \-\-kdf\-memory
+in memory and several seconds. This layer is only computationally secure: it slows down whoever steals a key file,
+but it is not part of the P = NP guarantee. Forgetting the passphrase loses the file. See NOTES.
+.TP
+.BI \-\-kdf\-memory " MIB"
+With
+.BR \-\-protect :
+the Argon2id memory in MiB (default 1024, 8 to 65536; Balloon gets 1/64 of it, at most 16 MiB). The decrypting
+computer needs this much free memory.
+.TP
+.BI \-\-passphrase\-file " FILE"
+Read the passphrase from the first line of
+.I FILE
+(without its line ending) instead of asking on the terminal. For encrypting, it goes with
+.BR \-\-protect .
+.TP
+.BR \-\-gen\-passphrase [=\fIWORDS\fR]
+Print a passphrase of 7 words (or
+.IR WORDS ,
+5 to 20) from the EFF large word list (7776 words, about 12.9 bits each), chosen with the same hardware sources as
+a pad, then exit.
+.TP
 .BR \-f ", " \-\-force
 Replace output files that already exist. Without it,
 .B pnp
@@ -140,6 +175,15 @@ the key, with its tag at the end of the ciphertext. Like the pad, it can't be fo
 power. If the ciphertext or the key has been changed or damaged, decrypting fails and nothing is written. Files from
 pnp 0.1.0\-alpha.2 or older have no MAC; they still decrypt, with a note saying so. The ciphertext and key also
 record which encryption they belong to, so a wrong key is refused.
+.PP
+With
+.BR \-\-protect ,
+the key is first checked to belong to the ciphertext, then the passphrase is asked for; a wrong one is refused at
+once. A strong passphrase matters more than the memory setting: a short or common one can still be guessed.
+.B \-\-gen\-passphrase
+makes a strong one. A key locked with
+.B \-\-protect
+can only be unlocked by pnp 0.1.0\-alpha.4 or newer.
 .PP
 The key is as large as the file. Losing the key means losing the file.
 .SH EXIT STATUS

@@ -22,3 +22,11 @@ License: MIT
  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  SOFTWARE.
+
+Files: data/eff_large_wordlist.txt
+Copyright: 2016 Electronic Frontier Foundation
+License: CC-BY-3.0-US
+ The EFF large word list (https://www.eff.org/dice), used by pnp --gen-passphrase
+ and compiled into the pnp program, unchanged. Licensed under the Creative Commons
+ Attribution 3.0 United States License:
+ https://creativecommons.org/licenses/by/3.0/us/

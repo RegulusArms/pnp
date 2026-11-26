@@ -1,7 +1,8 @@
 # pnp file format (version 002)
 
 pnp writes two files: the ciphertext (`FILE.pnp`) and the key (`FILE.pnp.key`). With `--shares N`, the key is
-written as N share files instead (`FILE.pnp.key.1` … `FILE.pnp.key.N`, see [Key shares](#key-shares)). For a file
+written as N share files instead (`FILE.pnp.key.1` … `FILE.pnp.key.N`, see [Key shares](#key-shares)). With
+`--protect`, the key or each share is locked with a passphrase (see [Protected keys](#protected-keys)). For a file
 of n bytes:
 
 | Offset | Length | Ciphertext (`.pnp`)              | Offset | Length | Key (`.pnp.key`)                 |
@@ -69,6 +70,100 @@ bytes:
   power is used. This is the same information-theoretic argument as for the pad itself.
 - The order doesn't matter (XOR is commutative). The number and count are there so pnp can refuse an incomplete
   set, or the same share given twice, instead of producing garbage.
+
+## Protected keys
+
+With `--protect`, a key or share carries a 48-byte **protection block** after its header, and its body (the key
+material, or the share body) is encrypted. The magic says so: `PNPKP002` for a protected key, `PNPSP002` for a
+protected share. The ciphertext is unchanged.
+
+| Offset (after the 24- or 26-byte header) | Length | Protection block                              |
+|-----------------------------------------:|-------:|-----------------------------------------------|
+| 0                                        | 4      | Balloon space cost: 64-byte blocks (LE32)     |
+| 4                                        | 4      | Balloon rounds (LE32)                         |
+| 8                                        | 4      | Argon2id memory in KiB (LE32)                 |
+| 12                                       | 4      | Argon2id passes (LE32); always one lane       |
+| 16                                       | 16     | salt (random for each encryption)             |
+| 32                                       | 16     | check value                                   |
+
+The body follows: the same 32 + n bytes as an unprotected key or share body, XORed with a ChaCha20 keystream.
+
+```
+b      = Balloon-BLAKE2b(passphrase, salt, space cost, rounds, delta = 3)   (64 bytes)
+a      = Argon2id(password = b, salt, memory, passes, lanes = 1, no secret, no associated data, 64 bytes)
+key    = a[0..31]
+check  = a[32..47]
+nonce  = LE32(share number, or 0 for a whole key) || 8 zero bytes
+body   = (key material) XOR ChaCha20(key, nonce, block counter from 0)      (RFC 8439)
+```
+
+- **Balloon** (Boneh, Corrigan-Gibbs and Schechter, 2016, Algorithm 1) with BLAKE2b-512 and 64-byte blocks. Every
+  hash is BLAKE2b-512(LE64(counter) || inputs), with the counter starting at 0 and counting every hash. Expand:
+  block 0 = hash(passphrase || salt), block m = hash(block m−1). Then for each round t and each block m: block m =
+  hash(block m−1 (cyclically) || block m), and three times (i = 0, 1, 2): other = hash(salt || LE64(t) || LE64(m) ||
+  LE64(i)) read as a little-endian integer, mod the number of blocks; block m = hash(block m || block other). The
+  result is the last block.
+- **Argon2id** is version 0x13 from RFC 9106.
+- The passphrase is the bytes typed (or the first line of `--passphrase-file`, without its `\n` or `\r\n`),
+  with no Unicode normalisation.
+- All the shares of one encryption have the same protection block (same salt, so the passphrase is hashed once);
+  the nonce keeps their keystreams apart. A new encryption gets a new salt, so a key and nonce are never reused.
+- The check value lets pnp reject a wrong passphrase before decrypting anything. Changing the settings or the salt
+  changes the key and so fails the check. Damage to the encrypted body isn't caught here but by the
+  [integrity check](#the-integrity-check), as for an unprotected key.
+- pnp accepts Argon2id memory from 8 MiB to 64 GiB, up to 1 GiB for Balloon, and up to 16 passes or rounds, so a
+  damaged or hostile key can't make it allocate terabytes or run for days. It writes 1 GiB with 2 passes and
+  16 MiB with 2 rounds by default (`--kdf-memory` sets the Argon2id memory; Balloon gets 1/64 of it, at most
+  16 MiB).
+- ChaCha20 has a 32-bit block counter, so one keystream covers 256 GiB: `--protect` refuses larger files.
+- **This layer is only computationally secure.** It makes a stolen key file expensive to use; it isn't part of
+  the information-theoretic guarantee, which rests on the pad, the one-time MAC and the shares alone.
+
+Unwrapping a protected key or share without pnp, in Python (with `argon2-cffi` and `cryptography`):
+
+```python
+import hashlib
+from argon2.low_level import Type, hash_secret_raw
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+
+def balloon(pw, salt, s, t):
+    cnt = 0
+    def h(*parts):
+        nonlocal cnt
+        x = hashlib.blake2b(cnt.to_bytes(8, "little"), digest_size=64)
+        for p in parts:
+            x.update(p)
+        cnt += 1
+        return x.digest()
+    buf = [h(pw, salt)]
+    for m in range(1, s):
+        buf.append(h(buf[m - 1]))
+    for r in range(t):
+        for m in range(s):
+            buf[m] = h(buf[(m - 1) % s], buf[m])
+            for i in range(3):
+                idx = h(salt, r.to_bytes(8, "little") + m.to_bytes(8, "little") + i.to_bytes(8, "little"))
+                buf[m] = h(buf[m], buf[int.from_bytes(idx, "little") % s])
+    return buf[s - 1]
+
+def unwrap(data, passphrase):
+    """a protected key or share file's bytes -> its key material (or share body), as if unprotected"""
+    share = data[:8] == b"PNPSP002"
+    assert share or data[:8] == b"PNPKP002"
+    hdr = 26 if share else 24
+    p = data[hdr:hdr + 48]
+    blocks, rounds, kib, passes = (int.from_bytes(p[i:i + 4], "little") for i in (0, 4, 8, 12))
+    salt, check = p[16:32], p[32:48]
+    a = hash_secret_raw(balloon(passphrase, salt, blocks, rounds), salt, passes, kib, 1, 64, Type.ID)
+    assert a[32:48] == check, "wrong passphrase"
+    nonce = (data[24] if share else 0).to_bytes(4, "little") + bytes(8)
+    # the library takes the 32-bit block counter (0) before the 12-byte nonce
+    return Cipher(algorithms.ChaCha20(a[:32], bytes(4) + nonce), None).decryptor().update(data[hdr + 48:])
+```
+
+Then use `unwrap(...)` in place of `key[24:]` (or of each `s[26:]`) in the example under
+[Decrypting without pnp](#decrypting-without-pnp). The pure-Python Balloon is slow at pnp's default 16 MiB
+(minutes).
 
 ## Version 001
 

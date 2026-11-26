@@ -8,7 +8,7 @@
 [![C11, libc only](https://img.shields.io/badge/C11-libc%20only-A8B9CC?logo=c&logoColor=white)](#building-from-source)
 [![License: MIT](https://img.shields.io/github/license/RegulusArms/pnp)](LICENSE)
 
-**Version 0.1.0-alpha.3**: early alpha. See [Installing](#installing).
+**Version 0.1.0-alpha.4**: early alpha. See [Installing](#installing).
 
 A command-line file encryption tool for Debian, Ubuntu, Linux Mint and other Debian-based systems, built to stay
 secure even if P = NP.
@@ -25,6 +25,8 @@ pnp --sources              # which hardware random sources this machine has
 pnp --key-out /media/usb photo.jpg      # the key goes straight onto the USB stick, never onto this disk
 pnp -d -k /media/usb/photo.jpg.pnp.key photo.jpg.pnp
 pnp --shares 2 photo.jpg                # the key as two shares, both needed to decrypt
+pnp --protect photo.jpg                 # the key also locked with a passphrase (see below)
+pnp --gen-passphrase                    # print a strong random passphrase
 ```
 
 Keep the `.pnp.key` file secret and separate from the `.pnp` file, and never reuse it. Anyone holding both can
@@ -116,6 +118,10 @@ sudo usermod -aG pnp $USER     # then log out and back in
 | `-o OUT`, `--output OUT` | Where to write: the ciphertext when encrypting (its key goes to `OUT.key`), the plaintext when decrypting |
 | `--key-out PATH` | Write the key straight into the folder `PATH` (as `FILE.pnp.key`), or to the file name `PATH`, instead of beside the ciphertext. With `--shares`: once for all shares (a folder), or once per share |
 | `--shares N` | Write the key as `N` shares (2 to 16) instead of one key file. Every share is needed to decrypt |
+| `--protect` | Also lock the key (or each share) with a passphrase, asked for twice. Decrypting asks for it. See [Locking a key with a passphrase](#locking-a-key-with-a-passphrase) |
+| `--kdf-memory MIB` | With `--protect`: the memory each passphrase guess costs, in MiB (default 1024, 8 to 65536). The decrypting computer needs this much free memory |
+| `--passphrase-file FILE` | Read the passphrase from the first line of `FILE` instead of asking (for scripts) |
+| `--gen-passphrase[=WORDS]` | Print a random passphrase of 7 words (or `WORDS`, 5 to 20) and exit |
 | `-f`, `--force` | Replace files that already exist. Without it, pnp never replaces anything |
 | `-q`, `--quiet` | Don't print which sources made the key, or what was written |
 | `-v`, `--verbose` | List every random source and its state |
@@ -164,8 +170,37 @@ Some rules:
   ```
 
   Losing any one share loses the file, so back up each share as you would a key.
+- **Optionally, lock the key with a passphrase too** (`--protect`, below). It doesn't replace any of the rules
+  above: it only slows down someone who already has your key file.
 - **Destroying every copy of a key makes the file unreadable for good**, which can be what you want. Remember that
   overwriting may not destroy data on SSDs and flash media: physically destroy the medium if it matters.
+
+## Locking a key with a passphrase
+
+`--protect` encrypts the key file (or each share) under a passphrase, so a stolen key alone isn't enough:
+
+```
+pnp --gen-passphrase                    # e.g. "wizard foothold applied provoke hatred whoever attendant"
+pnp --protect photo.jpg                 # asks for the passphrase twice
+pnp -d photo.jpg.pnp                    # asks for it once
+```
+
+**This is not part of pnp's P = NP guarantee.** It uses ordinary, computationally secure cryptography: the
+passphrase goes through two memory-hard password hashes one after the other (Balloon, then Argon2id), and the
+result encrypts the key with ChaCha20. Its job is to make guessing expensive: each guess costs about a gigabyte of
+memory and several seconds, so trying passphrases by the million on graphics cards isn't practical. That's a real
+obstacle for a thief or a casual attacker, and none at all for someone who can break these algorithms. If they
+did, they'd be left holding the plain key, exactly as without `--protect`: the one-time pad inside is unchanged.
+
+- **The passphrase is what matters most.** Hashing slows each guess, but a short or common passphrase is still
+  found quickly. `--gen-passphrase` picks words from the [EFF's list of 7776](https://www.eff.org/dice) with the
+  same hardware randomness as the pad: 7 words is about 90 bits, far beyond guessing. Write it down and keep it
+  apart from the key.
+- **Forget the passphrase and the file is gone**, just as if the key were lost.
+- **Decrypting needs the memory too**: 1 GiB by default. On a smaller machine, choose less when encrypting
+  (`--kdf-memory 256`), which makes each guess cheaper as well.
+- pnp still checks the key belongs to the file before asking for the passphrase, and says "wrong passphrase" at
+  once instead of after decrypting. Changes to a locked key are caught by the integrity check, as for any key.
 
 ## Building from source
 
@@ -195,7 +230,9 @@ building from source is the safest way to get pnp:
 1. Get the source from more than one place, and check the copies match.
 2. **Read it before you build it.** pnp is deliberately small, written in plain C with no libraries beyond the
    standard C library, so the whole program can be reviewed by hand. Check above all how the key is generated
-   (only hardware random sources) and that nothing is sent over the network.
+   (only hardware random sources) and that nothing is sent over the network. The optional passphrase lock
+   (`--protect`: src/protect.c, kdf.c, blake2b.c, chacha20.c) is the only part that relies on problems being hard,
+   and it only ever adds to the pad's protection.
 3. Build it yourself with your distribution's own compiler (`make`, then `sudo make install`).
 
 The installed apt package is fine for everyday use as long as P ≠ NP, or as long as no practical algorithm exists.

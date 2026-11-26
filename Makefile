@@ -25,8 +25,9 @@ HARDEN_LD := -pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack
 ALL_CFLAGS := $(WARN) $(HARDEN) $(CFLAGS) -DPNP_VERSION='"$(VERSION)"'
 ALL_LDFLAGS := $(HARDEN_LD) $(LDFLAGS)
 
-SRC := src/main.c src/rng.c src/fileio.c src/mac.c
-HDR := src/rng.h src/fileio.h src/mac.h
+SRC := src/main.c src/rng.c src/fileio.c src/mac.c src/protect.c src/kdf.c src/blake2b.c src/chacha20.c
+HDR := src/rng.h src/fileio.h src/mac.h src/protect.h src/kdf.h src/blake2b.h src/chacha20.h build/wordlist.h
+KDF_SRC := src/kdf.c src/blake2b.c src/chacha20.c
 
 .PHONY: all test install install-udev uninstall deb clean
 
@@ -35,12 +36,17 @@ all: build/pnp
 build:
 	mkdir -p build
 
+# --gen-passphrase's words: each "NNNNN<tab>word" line of the EFF list becomes "word",. A line in any other shape
+# is left as it is, so it breaks the build instead of slipping in.
+build/wordlist.h: data/eff_large_wordlist.txt | build
+	sed -E 's/^[1-6]{5}\t([a-z-]+)$$/"\1",/' $< > $@
+
 build/pnp: $(SRC) $(HDR) VERSION | build
-	$(CC) $(ALL_CFLAGS) -o $@ $(SRC) $(ALL_LDFLAGS)
+	$(CC) $(ALL_CFLAGS) -Ibuild -o $@ $(SRC) $(ALL_LDFLAGS)
 
 # the same program with the test hooks (PNP_TEST_* in src/rng.c); never installed or packaged
 build/pnp-test: $(SRC) $(HDR) VERSION | build
-	$(CC) $(ALL_CFLAGS) -DPNP_TEST -o $@ $(SRC) $(ALL_LDFLAGS)
+	$(CC) $(ALL_CFLAGS) -Ibuild -DPNP_TEST -o $@ $(SRC) $(ALL_LDFLAGS)
 
 build/test_health: tests/test_health.c src/rng.c src/rng.h | build
 	$(CC) $(ALL_CFLAGS) -DPNP_TEST -Isrc -o $@ tests/test_health.c src/rng.c $(ALL_LDFLAGS)
@@ -48,10 +54,13 @@ build/test_health: tests/test_health.c src/rng.c src/rng.h | build
 build/test_mac: tests/test_mac.c src/mac.c src/mac.h | build
 	$(CC) $(ALL_CFLAGS) -Isrc -o $@ tests/test_mac.c src/mac.c $(ALL_LDFLAGS)
 
+build/test_kdf: tests/test_kdf.c $(KDF_SRC) src/protect.c src/kdf.h src/blake2b.h src/chacha20.h src/protect.h | build
+	$(CC) $(ALL_CFLAGS) -Isrc -o $@ tests/test_kdf.c $(KDF_SRC) src/protect.c $(ALL_LDFLAGS)
+
 build/xorcheck: tests/xorcheck.c | build
 	$(CC) $(ALL_CFLAGS) -o $@ tests/xorcheck.c $(ALL_LDFLAGS)
 
-test: build/pnp build/pnp-test build/test_health build/test_mac build/xorcheck
+test: build/pnp build/pnp-test build/test_health build/test_mac build/test_kdf build/xorcheck
 	tests/run.sh
 
 install: build/pnp

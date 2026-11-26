@@ -2,6 +2,16 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.4
+
+- **`--protect` locks the key with a passphrase**, so a stolen key file alone isn't enough. Every passphrase guess
+  costs about a gigabyte of memory and several seconds (two memory-hard password hashes, Balloon then Argon2id; the
+  key is then encrypted with ChaCha20). This layer is only computationally secure, unlike the rest of pnp: it slows
+  down a thief, it isn't part of the P = NP guarantee. `--kdf-memory` chooses the memory, and
+  `--passphrase-file` reads the passphrase from a file for scripts. Works with `--shares` and `--key-out`.
+- **`--gen-passphrase` prints a strong random passphrase**: 7 words (about 90 bits) from the EFF's word list,
+  chosen with the same hardware randomness as the pad.
+
 ## 0.1.0-alpha.3
 
 - **`--key-out PATH` writes the key straight to another folder** (a USB stick, say) or file name, instead of beside

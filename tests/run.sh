@@ -24,6 +24,8 @@ fresh() { rm -rf "$T/w" && mkdir "$T/w"; }
 "$B/test_health" || fails=$((fails + $?))
 # --- the integrity check's MAC (unit tests of src/mac.c)
 "$B/test_mac" || fails=$((fails + $?))
+# --- --protect's hashes and cipher (unit tests of src/kdf.c, blake2b.c, chacha20.c, protect.c)
+"$B/test_kdf" || fails=$((fails + $?))
 
 # --- encrypt and decrypt
 for size in 0 1 65535 65536 65537 $((3 << 20 | 7)); do
@@ -241,6 +243,69 @@ cat <(printf PNPCT001) "$T/id" "$T/pad" >"$T/w/old.pnp"
 cat <(printf PNPKY001) "$T/id" "$T/pad" >"$T/w/old.pnp.key"
 check '"$PNP" -d "$T/w/old.pnp" 2>"$T/err" && cmp -s "$T/w/old" <(head -c 5000 /dev/zero) && grep -q "no integrity check" "$T/err"' \
     "a format 001 file from an older pnp still decrypts, with a note that it has no integrity check"
+
+# --- --protect: the key encrypted under a passphrase (8 MiB settings here, to keep the tests quick)
+fresh
+printf 'correct horse battery staple\n' >"$T/pass"
+printf 'correct horse battery staple\r\n' >"$T/pass-crlf"
+printf 'wrong horse battery staple\n' >"$T/wrong"
+: >"$T/empty"
+P8=(--protect --kdf-memory 8 --passphrase-file "$T/pass")
+head -c 100000 /dev/zero >"$T/w/f" # zeros: the ciphertext's body is then the pad itself
+check '"$PNP" -q "${P8[@]}" "$T/w/f" && [[ $(head -c 8 "$T/w/f.pnp.key") == PNPKP002 &&
+       $(stat -c %s "$T/w/f.pnp.key") == $((24 + 48 + 32 + 100000)) && $(stat -c %a "$T/w/f.pnp.key") == 600 &&
+       $(stat -c %s "$T/w/f.pnp") == $((24 + 100000 + 16)) ]]' \
+    "--protect writes a PNPKP002 key (header, 48-byte protection block, key material) and an ordinary ciphertext"
+check '! cmp -s <(tail -c +105 "$T/w/f.pnp.key") <(tail -c +25 "$T/w/f.pnp" | head -c 100000)' \
+    "the protected key doesn't hold the pad as it is"
+mv "$T/w/f" "$T/w/orig"
+check '"$PNP" -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" && cmp -s "$T/w/f" "$T/w/orig" &&
+       grep -q "unlocking the key" "$T/err"' "a protected key decrypts with the right passphrase"
+rm "$T/w/f"
+check '"$PNP" -q -d --passphrase-file "$T/pass-crlf" "$T/w/f.pnp" && cmp -s "$T/w/f" "$T/w/orig"' \
+    "a passphrase file with a Windows line ending (\\r\\n) gives the same passphrase"
+rm "$T/w/f"
+check '! "$PNP" -q -d --passphrase-file "$T/wrong" "$T/w/f.pnp" 2>"$T/err" && grep -q "wrong passphrase" "$T/err" &&
+       [[ ! -e "$T/w/f" ]] && no_parts' "a wrong passphrase is refused at once, and nothing is written"
+check '! setsid -w "$PNP" -q -d "$T/w/f.pnp" </dev/null 2>"$T/err" && grep -q "no terminal" "$T/err" && [[ ! -e "$T/w/f" ]]' \
+    "with no terminal to ask on and no --passphrase-file, decrypting a protected key stops with a clear message"
+cp "$T/w/f.pnp.key" "$T/w/key"
+printf '\377\377\377\377' | dd of="$T/w/f.pnp.key" bs=1 seek=32 conv=notrunc status=none
+check '! "$PNP" -q -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" && grep -q "settings pnp doesn.t accept" "$T/err"' \
+    "a protected key asking for 4 TiB of memory is refused, not attempted"
+cp "$T/w/key" "$T/w/f.pnp.key" && flip "$T/w/f.pnp.key" 40
+check '! "$PNP" -q -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" && grep -q "wrong passphrase" "$T/err"' \
+    "a changed salt fails the passphrase check"
+cp "$T/w/key" "$T/w/f.pnp.key" && flip "$T/w/f.pnp.key" 5000
+check '! "$PNP" -q -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" &&
+       [[ ! -e "$T/w/f" ]] && no_parts' "a flipped bit in the protected key's body is caught by the integrity check"
+cp "$T/w/key" "$T/w/f.pnp.key"
+head -c 1000 /dev/urandom >"$T/w/other" && "$PNP" -q "${P8[@]}" "$T/w/other"
+check '! setsid -w "$PNP" -q -d -k "$T/w/other.pnp.key" "$T/w/f.pnp" </dev/null 2>"$T/err" && grep -q "isn.t the key for" "$T/err"' \
+    "another encryption's protected key is refused before the passphrase is asked for"
+check '! "$PNP" -q --protect --kdf-memory 8 --passphrase-file "$T/empty" -o "$T/w/e.pnp" "$T/w/orig" 2>"$T/err" &&
+       grep -q "passphrase is empty" "$T/err" && [[ ! -e "$T/w/e.pnp" ]] && no_parts' "an empty passphrase is refused"
+check '! "$PNP" -q -d --protect "$T/w/f.pnp" 2>/dev/null && ! "$PNP" -q --kdf-memory 8 "$T/w/orig" 2>/dev/null &&
+       ! "$PNP" -q --protect --kdf-memory 7 "$T/w/orig" 2>/dev/null' \
+    "--protect is for encrypting, --kdf-memory needs --protect and at least 8 MiB"
+fresh
+head -c 70000 /dev/urandom >"$T/w/f" && cp "$T/w/f" "$T/w/orig"
+"$PNP" -q --shares 3 "${P8[@]}" "$T/w/f" && rm "$T/w/f"
+check '[[ $(head -c 8 "$T/w/f.pnp.key.1") == PNPSP002 && $(head -c 8 "$T/w/f.pnp.key.3") == PNPSP002 ]] &&
+       "$PNP" -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" && cmp -s "$T/w/f" "$T/w/orig" &&
+       [[ $(grep -c "unlocking" "$T/err") == 1 ]]' \
+    "--protect with --shares protects every share (PNPSP002), and decrypting hashes the passphrase only once"
+
+# --- --gen-passphrase
+check '[[ $(cut -f2 data/eff_large_wordlist.txt | sort -u | wc -l) == 7776 ]]' "the word list has 7776 different words"
+"$PNP" -q --gen-passphrase >"$T/pp1" && "$PNP" -q --gen-passphrase >"$T/pp2"
+check '[[ $(wc -w <"$T/pp1") == 7 ]] && ! cmp -s "$T/pp1" "$T/pp2" && [[
+       -z $(tr " " "\n" <"$T/pp1" | grep -vxFf <(cut -f2 data/eff_large_wordlist.txt)) ]]' \
+    "--gen-passphrase prints 7 words, all from the list, different each time"
+check '[[ $("$PNP" -q --gen-passphrase=5 | wc -w) == 5 ]] && ! "$PNP" -q --gen-passphrase=4 2>/dev/null' \
+    "--gen-passphrase=5 prints 5 words; fewer than 5 is refused"
+check '! PNP_TEST_HWRNG="$T/none" "$PNP" -q --gen-passphrase >/dev/null 2>"$T/err" && grep -q "won.t make a passphrase" "$T/err"' \
+    "--gen-passphrase needs a hardware source, like the pad"
 
 # --- wrong or damaged keys
 fresh
