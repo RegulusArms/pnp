@@ -243,11 +243,16 @@ In practice, your files are exactly as safe as the place your keys are kept, and
 (hardware randomness, health tests, the integrity check, shares, `--protect`) is there so that this is the only
 thing left to get right.
 
-[docs/code-cylinder.md](docs/code-cylinder.md) walks through setting up a key drive to carry. Some rules:
+[docs/code-cylinder.md](docs/code-cylinder.md) walks through setting up an encrypted key drive to carry. Some
+rules:
 
-- **Guard keys physically, and don't rely on encryption to do it.** An AES-encrypted drive, a password manager or
-  a cloud account is only as strong as the very ciphers P = NP would break, and so is pnp's own `--protect`. A USB
-  stick in a drawer, a safe or a bank deposit box doesn't depend on any of that.
+- **Guard keys physically first, and treat encryption as a second lock.** An encrypted drive, a password manager
+  or a cloud account is only as strong as the very ciphers P = NP would break, and so is pnp's own `--protect`. A
+  drive in your pocket, a safe or a bank deposit box doesn't depend on any of that.
+- **Encrypt the key drive anyway** (LUKS2, or a VeraCrypt volume). It's computationally secure only, but it means
+  a lost or stolen drive gives no usable keys to anyone short of a state: they'd have to copy the whole drive and
+  then crack its passphrase. It adds to physical custody, never replaces it, and while the drive is unlocked it
+  protects nothing.
 - **Keep the ciphertext anywhere and the key offline.** Never store a key with its ciphertext, in cloud storage,
   or in email.
 - **Keep keys off the computer's SSD.** A deleted file on an SSD may stay recoverable, because the drive moves data
@@ -365,7 +370,7 @@ MIT. See [LICENSE](LICENSE).
 | Document | What's in it |
 |---|---|
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
-| [docs/code-cylinder.md](docs/code-cylinder.md) | Setting up a key drive (an external hard disk) to carry with you, and why pnp relies on physical security |
+| [docs/code-cylinder.md](docs/code-cylinder.md) | Setting up an encrypted key drive (an external hard disk) to carry with you, and why pnp relies on physical security |
 | [docs/format.md](docs/format.md) | The file formats (ciphertext, key, key shares, keys locked with a passphrase), and how to decrypt without pnp |
 | [docs/threat-model.md](docs/threat-model.md) | Who pnp defends against, who it can't, and every assumption the guarantee rests on |
 | [docs/recovery.md](docs/recovery.md) | What an interrupted run can leave behind, and how to recover |
