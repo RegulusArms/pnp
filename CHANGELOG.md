@@ -9,6 +9,14 @@ What changed in each version of pnp, newest first.
   key is then encrypted with ChaCha20). This layer is only computationally secure, unlike the rest of pnp: it slows
   down a thief, it isn't part of the P = NP guarantee. `--kdf-memory` chooses the memory, and
   `--passphrase-file` reads the passphrase from a file for scripts. Works with `--shares` and `--key-out`.
+  Argon2id uses every CPU core, so large settings stay quick (50 GiB in about 30 seconds on 32 cores), and pnp
+  checks there's enough free memory before it starts instead of swapping for hours.
+- **An interactive mode: type `pnp` on its own.** A file browser for the current folder: select files, and pnp
+  shows exactly what it will write and where (the ciphertext here, the key on your code cylinder) before
+  encrypting, or which key on which drive it will use before decrypting. It finds the key drive by itself (a
+  drive labelled `KEYS` is preferred), matches each file to its key even if renamed, finds shares spread over
+  several drives, and walks through shares and passphrase locks.
+- File names are shown safely everywhere: a name containing terminal control codes can't affect the terminal.
 - **`--gen-passphrase` prints a strong random passphrase**: 7 words (about 90 bits) from the EFF's word list,
   chosen with the same hardware randomness as the pad.
 - The README, the manual and the key drive guide now say plainly that how you physically store your keys is the

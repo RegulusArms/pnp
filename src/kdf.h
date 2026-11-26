@@ -13,9 +13,10 @@
 int pnp_balloon(uint8_t out[PNP_BALLOON_BLOCK], const uint8_t *pwd, size_t pwdlen, const uint8_t *salt,
                 size_t saltlen, uint64_t s_cost, uint32_t t_cost);
 
-/* Argon2id version 0x13 (RFC 9106): m_kib KiB of memory (>= 8 * lanes), t passes (>= 1), lanes (1..255, computed one
- * after another: pnp has no threads). secret and ad may be empty (NULL, 0). Writes outlen (4..1024) bytes. Returns
- * 0, or -1 if the memory can't be had or a parameter is out of range. */
+/* Argon2id version 0x13 (RFC 9106): m_kib KiB of memory (>= 8 * lanes), t passes (>= 1), lanes (1..255). The lanes
+ * are computed in parallel, one thread per CPU at most; the result doesn't depend on how many threads ran. secret
+ * and ad may be empty (NULL, 0). Writes outlen (4..1024) bytes. Returns 0, or -1 if the memory can't be had or a
+ * parameter is out of range. */
 int pnp_argon2id(uint8_t *out, size_t outlen, const uint8_t *pwd, size_t pwdlen, const uint8_t *salt, size_t saltlen,
                  const uint8_t *secret, size_t secretlen, const uint8_t *ad, size_t adlen, uint32_t m_kib, uint32_t t,
                  uint32_t lanes);

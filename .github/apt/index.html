@@ -38,7 +38,8 @@
   <p>pnp encrypts any file with a key of truly random bytes as long as the file, read from your machine's hardware
   random number generators. A one-time pad doesn't rely on any problem being hard to compute, so no amount of
   computing power can break it.</p>
-<pre>pnp photo.jpg            # writes photo.jpg.pnp and its key photo.jpg.pnp.key
+<pre>pnp                      # browse your files and encrypt or decrypt them step by step
+pnp photo.jpg            # writes photo.jpg.pnp and its key photo.jpg.pnp.key
 pnp -d photo.jpg.pnp     # gives back photo.jpg</pre>
   <p>Without the key, nobody can read the file; with it, anyone can. So the weakest link is how you store your keys:
   keep them offline and apart from the <code>.pnp</code> files.</p>

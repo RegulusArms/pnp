@@ -6,7 +6,7 @@
  * attacker would be back to holding the plain key file, exactly as without --protect: the pad inside is unchanged.
  *
  *   b   = Balloon-BLAKE2b(passphrase, salt)                 (kdf.c; 16 MiB, 2 rounds by default)
- *   a   = Argon2id(password b, salt) -> 64 bytes            (kdf.c; 1 GiB, 2 passes, one lane by default)
+ *   a   = Argon2id(password b, salt) -> 64 bytes            (kdf.c; 1 GiB, 2 passes, one lane per CPU by default)
  *   key = a[0..31], check = a[32..47]
  *   key file body = key material XOR ChaCha20(key, nonce = LE32(share number, 0 for a whole key) || 8 zero bytes)
  *
@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
 #include <termios.h>
@@ -33,6 +34,7 @@ extern volatile sig_atomic_t pnp_stop;
 
 #define BALLOON_MAX_BLOCKS ((uint32_t)1 << 24) /* 1 GiB */
 #define MAX_ROUNDS 16                           /* passes or rounds a key may ask for */
+#define MAX_LANES 64                            /* Argon2id lanes pnp makes and accepts */
 
 static void le32(uint8_t *b, uint32_t v)
 {
@@ -47,6 +49,11 @@ int pnp_protect_new(struct pnp_protect *p, uint32_t argon_mib)
     memset(p, 0, sizeof *p);
     p->argon_kib = argon_mib * 1024;
     p->argon_passes = 2;
+    /* One lane per CPU, so encrypting and decrypting here use every core. The lanes don't change the work an
+     * attacker must do per guess (the same memory filled the same number of times), only how much of it can run
+     * at once. A machine with fewer cores still decrypts, just more slowly. */
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    p->argon_lanes = cpus < 1 ? 1 : cpus > MAX_LANES ? MAX_LANES : (uint32_t)cpus;
     /* Balloon is much slower per byte, so it gets 1/64 of the memory, at most 16 MiB (about 2.5 s) */
     p->balloon_blocks = (argon_mib < 1024 ? argon_mib : 1024) * 256;
     p->balloon_rounds = 2;
@@ -59,8 +66,9 @@ void pnp_protect_encode(const struct pnp_protect *p, uint8_t out[PNP_PROTECT_LEN
     le32(out + 4, p->balloon_rounds);
     le32(out + 8, p->argon_kib);
     le32(out + 12, p->argon_passes);
-    memcpy(out + 16, p->salt, PNP_PROTECT_SALT);
-    memcpy(out + 32, p->check, PNP_PROTECT_CHECK);
+    le32(out + 16, p->argon_lanes);
+    memcpy(out + 20, p->salt, PNP_PROTECT_SALT);
+    memcpy(out + 36, p->check, PNP_PROTECT_CHECK);
 }
 
 int pnp_protect_decode(struct pnp_protect *p, const uint8_t in[PNP_PROTECT_LEN])
@@ -69,12 +77,14 @@ int pnp_protect_decode(struct pnp_protect *p, const uint8_t in[PNP_PROTECT_LEN])
     p->balloon_rounds = get32(in + 4);
     p->argon_kib = get32(in + 8);
     p->argon_passes = get32(in + 12);
-    memcpy(p->salt, in + 16, PNP_PROTECT_SALT);
-    memcpy(p->check, in + 32, PNP_PROTECT_CHECK);
+    p->argon_lanes = get32(in + 16);
+    memcpy(p->salt, in + 20, PNP_PROTECT_SALT);
+    memcpy(p->check, in + 36, PNP_PROTECT_CHECK);
     /* bounds, so a damaged or hostile key can't ask for terabytes or hours */
     if (p->balloon_blocks < 2 || p->balloon_blocks > BALLOON_MAX_BLOCKS || p->balloon_rounds < 1 ||
         p->balloon_rounds > MAX_ROUNDS || p->argon_kib < PNP_PROTECT_MIB_MIN * 1024 ||
-        p->argon_kib > (uint32_t)PNP_PROTECT_MIB_MAX * 1024 || p->argon_passes < 1 || p->argon_passes > MAX_ROUNDS)
+        p->argon_kib > (uint32_t)PNP_PROTECT_MIB_MAX * 1024 || p->argon_passes < 1 || p->argon_passes > MAX_ROUNDS ||
+        p->argon_lanes < 1 || p->argon_lanes > MAX_LANES)
         return -1;
     return 0;
 }
@@ -87,7 +97,7 @@ static int derive(const struct pnp_protect *p, const char *pass, size_t passlen,
     if (pnp_balloon(b, (const uint8_t *)pass, passlen, p->salt, sizeof p->salt, p->balloon_blocks,
                     p->balloon_rounds) == 0 &&
         pnp_argon2id(a, sizeof a, b, sizeof b, p->salt, sizeof p->salt, NULL, 0, NULL, 0, p->argon_kib,
-                     p->argon_passes, 1) == 0) {
+                     p->argon_passes, p->argon_lanes) == 0) {
         memcpy(key, a, 32);
         memcpy(check, a + 32, PNP_PROTECT_CHECK);
         ret = 0;
@@ -114,6 +124,35 @@ int pnp_protect_unlock(const struct pnp_protect *p, const char *pass, size_t pas
         return -2;
     }
     return 0;
+}
+
+uint32_t pnp_protect_need_mib(const struct pnp_protect *p)
+{
+    /* Balloon's buffer is freed before Argon2id's is made, so the peak is the larger, plus a little for the rest */
+    uint32_t balloon = (uint32_t)(((uint64_t)p->balloon_blocks * PNP_BALLOON_BLOCK) >> 20);
+    uint32_t argon = p->argon_kib / 1024;
+    return (argon > balloon ? argon : balloon) + 16;
+}
+
+/* Checked before hashing, so too little memory gives a clear message instead of the machine swapping for hours
+ * (Argon2id reads its memory in a random order, which is hopeless on swap) or the kernel killing pnp. */
+long pnp_mem_available_mib(void)
+{
+    const char *path = "/proc/meminfo";
+#ifdef PNP_TEST
+    if (getenv("PNP_TEST_MEMINFO")) /* test hook: another file in /proc/meminfo's format */
+        path = getenv("PNP_TEST_MEMINFO");
+#endif
+    FILE *f = fopen(path, "re");
+    if (!f)
+        return -1;
+    char line[128];
+    long kib = -1;
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "MemAvailable: %ld kB", &kib) == 1)
+            break;
+    fclose(f);
+    return kib < 0 ? -1 : kib / 1024;
 }
 
 void pnp_protect_stream(struct pnp_chacha20 *c, const uint8_t key[32], int share)

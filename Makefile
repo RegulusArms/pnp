@@ -22,11 +22,12 @@ WARN += -Werror
 endif
 HARDEN := -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fstack-clash-protection -fPIE
 HARDEN_LD := -pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack
-ALL_CFLAGS := $(WARN) $(HARDEN) $(CFLAGS) -DPNP_VERSION='"$(VERSION)"'
-ALL_LDFLAGS := $(HARDEN_LD) $(LDFLAGS)
+# -pthread: Argon2id's lanes run in threads (src/kdf.c); pthreads are part of glibc, so still libc only
+ALL_CFLAGS := $(WARN) $(HARDEN) -pthread $(CFLAGS) -DPNP_VERSION='"$(VERSION)"'
+ALL_LDFLAGS := $(HARDEN_LD) -pthread $(LDFLAGS)
 
-SRC := src/main.c src/rng.c src/fileio.c src/mac.c src/protect.c src/kdf.c src/blake2b.c src/chacha20.c
-HDR := src/rng.h src/fileio.h src/mac.h src/protect.h src/kdf.h src/blake2b.h src/chacha20.h build/wordlist.h
+SRC := src/main.c src/tui.c src/rng.c src/fileio.c src/mac.c src/protect.c src/kdf.c src/blake2b.c src/chacha20.c
+HDR := src/pnp.h src/format.h src/rng.h src/fileio.h src/mac.h src/protect.h src/kdf.h src/blake2b.h src/chacha20.h build/wordlist.h
 KDF_SRC := src/kdf.c src/blake2b.c src/chacha20.c
 
 .PHONY: all test install install-udev uninstall deb clean

@@ -30,6 +30,8 @@ pnp \- one-time pad file encryption that stays secure even if P = NP
 .IR FILE ]
 .I FILE.pnp
 .br
+.B pnp
+.br
 .B pnp \-\-sources
 .br
 .BR pnp " " \-\-gen\-passphrase [=\fIWORDS\fR]
@@ -60,6 +62,27 @@ combined with XOR, together with the kernel's
 If no hardware source is usable,
 .B pnp
 refuses to encrypt. Decrypting needs no random source.
+.SS Interactive mode
+.B pnp
+alone, in a terminal, opens a file browser for the current folder. Arrow keys (or j and k) move, Space selects,
+Enter opens a folder or goes on with the selection (or the highlighted file), Backspace goes up a folder, . shows
+hidden files, c chooses the code cylinder, r looks again for drives and keys, and q quits.
+.PP
+For files to encrypt, it shows each output it will write before writing anything, and lets you choose where the
+key goes (a drive, or beside the file), whether to split it into shares (each to its own drive), and whether to
+lock it with a passphrase (typed, or made by
+.BR \-\-gen\-passphrase ).
+For .pnp files, it shows which key or shares it will decrypt with. A ciphertext is matched to its key by their
+shared ID, so renamed files still match; a missing key or share is named and the file skipped.
+.PP
+The code cylinder (key drive) is looked for among the folders in
+.I /media/$USER
+and
+.IR /run/media/$USER ,
+preferring one named KEYS; keys are looked for at the top of each, and beside the ciphertext. When not in a
+terminal, or with TERM=dumb,
+.B pnp
+alone prints its usage.
 .SH OPTIONS
 .TP
 .BR \-d ", " \-\-decrypt
@@ -114,7 +137,10 @@ but it is not part of the P = NP guarantee. Forgetting the passphrase loses the 
 With
 .BR \-\-protect :
 the Argon2id memory in MiB (default 1024, 8 to 65536; Balloon gets 1/64 of it, at most 16 MiB). The decrypting
-computer needs this much free memory.
+computer needs this much free memory: pnp checks MemAvailable in
+.I /proc/meminfo
+before hashing and stops if there's too little. Argon2id runs one lane per CPU (at most 64), in parallel threads;
+a computer with fewer cores decrypts more slowly, with the same result.
 .TP
 .BI \-\-passphrase\-file " FILE"
 Read the passphrase from the first line of
@@ -158,6 +184,9 @@ then log out and back in.
 .TP
 .I /usr/lib/udev/rules.d/60-pnp-hwrng.rules
 That rule.
+.TP
+.IR /media/$USER/* ", " /run/media/$USER/*
+Mounted drives: the interactive mode's candidates for the code cylinder.
 .SH NOTES
 Outputs are written under hidden names
 .RI ( .NAME.XXXXXX.pnp-part )

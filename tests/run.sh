@@ -253,10 +253,10 @@ printf 'wrong horse battery staple\n' >"$T/wrong"
 P8=(--protect --kdf-memory 8 --passphrase-file "$T/pass")
 head -c 100000 /dev/zero >"$T/w/f" # zeros: the ciphertext's body is then the pad itself
 check '"$PNP" -q "${P8[@]}" "$T/w/f" && [[ $(head -c 8 "$T/w/f.pnp.key") == PNPKP002 &&
-       $(stat -c %s "$T/w/f.pnp.key") == $((24 + 48 + 32 + 100000)) && $(stat -c %a "$T/w/f.pnp.key") == 600 &&
+       $(stat -c %s "$T/w/f.pnp.key") == $((24 + 52 + 32 + 100000)) && $(stat -c %a "$T/w/f.pnp.key") == 600 &&
        $(stat -c %s "$T/w/f.pnp") == $((24 + 100000 + 16)) ]]' \
-    "--protect writes a PNPKP002 key (header, 48-byte protection block, key material) and an ordinary ciphertext"
-check '! cmp -s <(tail -c +105 "$T/w/f.pnp.key") <(tail -c +25 "$T/w/f.pnp" | head -c 100000)' \
+    "--protect writes a PNPKP002 key (header, 52-byte protection block, key material) and an ordinary ciphertext"
+check '! cmp -s <(tail -c +109 "$T/w/f.pnp.key") <(tail -c +25 "$T/w/f.pnp" | head -c 100000)' \
     "the protected key doesn't hold the pad as it is"
 mv "$T/w/f" "$T/w/orig"
 check '"$PNP" -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" && cmp -s "$T/w/f" "$T/w/orig" &&
@@ -273,13 +273,26 @@ cp "$T/w/f.pnp.key" "$T/w/key"
 printf '\377\377\377\377' | dd of="$T/w/f.pnp.key" bs=1 seek=32 conv=notrunc status=none
 check '! "$PNP" -q -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" && grep -q "settings pnp doesn.t accept" "$T/err"' \
     "a protected key asking for 4 TiB of memory is refused, not attempted"
-cp "$T/w/key" "$T/w/f.pnp.key" && flip "$T/w/f.pnp.key" 40
+cp "$T/w/key" "$T/w/f.pnp.key" && flip "$T/w/f.pnp.key" 44
 check '! "$PNP" -q -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" && grep -q "wrong passphrase" "$T/err"' \
     "a changed salt fails the passphrase check"
 cp "$T/w/key" "$T/w/f.pnp.key" && flip "$T/w/f.pnp.key" 5000
 check '! "$PNP" -q -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" &&
        [[ ! -e "$T/w/f" ]] && no_parts' "a flipped bit in the protected key's body is caught by the integrity check"
 cp "$T/w/key" "$T/w/f.pnp.key"
+printf 'MemTotal:       8000000 kB\nMemAvailable:      20480 kB\n' >"$T/meminfo-20m"
+check '! PNP_TEST_MEMINFO="$T/meminfo-20m" "$PNP" -q -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" &&
+       grep -q "needs about 24 MiB of free memory, but only 20 MiB" "$T/err" && [[ ! -e "$T/w/f" ]] && no_parts' \
+    "decrypting refuses with a clear message when there isn't enough free memory for the passphrase hashing"
+check '! PNP_TEST_MEMINFO="$T/meminfo-20m" "$PNP" -q "${P8[@]}" -o "$T/w/m.pnp" "$T/w/orig" 2>"$T/err" &&
+       grep -q "only 20 MiB is available: choose less with --kdf-memory" "$T/err" && [[ ! -e "$T/w/m.pnp" ]] && no_parts' \
+    "encrypting with --protect refuses when there isn't enough free memory, and writes nothing"
+printf 'MemTotal:       8000000 kB\nMemAvailable:      24576 kB\n' >"$T/meminfo-24m"
+check 'PNP_TEST_MEMINFO="$T/meminfo-24m" "$PNP" -q -d --passphrase-file "$T/pass" "$T/w/f.pnp" && cmp -s "$T/w/f" "$T/w/orig"' \
+    "exactly enough free memory is enough"
+rm -f "$T/w/f"
+check '[[ $(od -An -tu4 -j 40 -N4 "$T/w/f.pnp.key" | tr -d " ") == $(nproc | awk "{print (\$1 > 64 ? 64 : \$1)}") ]]' \
+    "the key records one Argon2id lane per CPU (at most 64)"
 head -c 1000 /dev/urandom >"$T/w/other" && "$PNP" -q "${P8[@]}" "$T/w/other"
 check '! setsid -w "$PNP" -q -d -k "$T/w/other.pnp.key" "$T/w/f.pnp" </dev/null 2>"$T/err" && grep -q "isn.t the key for" "$T/err"' \
     "another encryption's protected key is refused before the passphrase is asked for"
@@ -306,6 +319,40 @@ check '[[ $("$PNP" -q --gen-passphrase=5 | wc -w) == 5 ]] && ! "$PNP" -q --gen-p
     "--gen-passphrase=5 prints 5 words; fewer than 5 is refused"
 check '! PNP_TEST_HWRNG="$T/none" "$PNP" -q --gen-passphrase >/dev/null 2>"$T/err" && grep -q "won.t make a passphrase" "$T/err"' \
     "--gen-passphrase needs a hardware source, like the pad"
+
+# --- the interactive mode ("pnp" alone in a terminal), driven through script(1) with the keys piped in.
+# PNP_TEST_MEDIA stands in for /media/$USER: KEYS (the code cylinder) and OTHER are two "drives".
+tui() { # $1: the keys to press (printf format); the screen output goes to $T/tui.out
+    (cd "$T/tw" && printf "$1" | TERM=xterm PNP_TEST_MEDIA="$T/media" script -qec "$PNP" "$T/tui.out" >/dev/null 2>&1)
+}
+rm -rf "$T/tw" "$T/media" && mkdir -p "$T/tw" "$T/media/KEYS" "$T/media/OTHER"
+echo "made in the interactive mode" >"$T/tw/a.txt" && cp "$T/tw/a.txt" "$T/a.orig"
+printf x >"$T/tw/$(printf 'n\033]0;pwned\007.txt')" # a file name with an escape sequence (sets the window title)
+# the list: .., a.txt, n...; j a.txt, Enter, then the rows key-goes-to, split, lock, [Encrypt]: jjj Enter
+tui 'j\rjjj\r\nq'
+check '[[ -f "$T/tw/a.txt.pnp" && -f "$T/media/KEYS/a.txt.pnp.key" && ! -e "$T/tw/a.txt.pnp.key" ]] &&
+       "$B/xorcheck" "$T/a.orig" "$T/tw/a.txt.pnp" "$T/media/KEYS/a.txt.pnp.key" && grep -q "Will write" "$T/tui.out"' \
+    "interactive: Enter on a file shows what will be written, and encrypts it with its key on the code cylinder"
+check '! grep -q $'"'"'\033\]0;pwned'"'"' "$T/tui.out" && grep -q "n?\]0;pwned?.txt" "$T/tui.out"' \
+    "interactive: an escape sequence in a file name is shown as ?, never sent to the terminal"
+rm "$T/tw/a.txt"
+tui 'j\r\r\nq' # the list: .., a.txt.pnp, n...; Enter, [Decrypt]
+check 'cmp -s "$T/tw/a.txt" "$T/a.orig" && grep -q "media/KEYS/a.txt.pnp.key" "$T/tui.out"' \
+    "interactive: Enter on a .pnp file shows the key it found on the code cylinder, and decrypts with it"
+rm "$T/tw/a.txt.pnp" "$T/media/KEYS/a.txt.pnp.key"
+tui 'j\rjljjjj\r\nq' # split: 2 shares (share 1 to the cylinder, share 2 to the other drive), [Encrypt]
+check '[[ -f "$T/media/KEYS/a.txt.pnp.key.1" && -f "$T/media/OTHER/a.txt.pnp.key.2" ]]' \
+    "interactive: a key split into 2 shares goes to two different drives"
+rm "$T/tw/a.txt"
+tui 'j\r\r\nq'
+check 'cmp -s "$T/tw/a.txt" "$T/a.orig"' "interactive: the shares are found on both drives and the file decrypts"
+rm "$T/tw/a.txt" && mv "$T/media/OTHER" "$T/unplugged"
+tui 'j\rj\rq' # one drive unplugged: [Back]
+check 'grep -q "only 1 of 2 shares found" "$T/tui.out" && [[ ! -e "$T/tw/a.txt" ]]' \
+    "interactive: with a drive unplugged it says which share is missing, and decrypts nothing"
+check '"$PNP" </dev/null >/dev/null 2>&1; [[ $? == 2 ]] &&
+       (cd "$T/tw" && printf q | TERM=dumb script -qec "$PNP" "$T/tui.out" >/dev/null 2>&1; grep -q "usage: pnp" "$T/tui.out" && ! grep -q "1049h" "$T/tui.out")' \
+    "pnp alone prints its usage when not in a terminal, or with TERM=dumb"
 
 # --- wrong or damaged keys
 fresh

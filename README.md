@@ -18,6 +18,7 @@ machine's hardware random number generators. The file and the key are combined w
 doesn't depend on any problem being hard to compute, so faster computers or new algorithms can't break it.
 
 ```
+pnp                        # browse this folder and encrypt or decrypt step by step (see below)
 pnp photo.jpg              # writes photo.jpg.pnp (encrypted) and photo.jpg.pnp.key (the key)
 pnp -d photo.jpg.pnp       # uses photo.jpg.pnp.key to write photo.jpg again
 pnp --sources              # which hardware random sources this machine has
@@ -111,6 +112,43 @@ Only root can read `/dev/hwrng` by default. The package adds a `pnp` group that 
 sudo usermod -aG pnp $USER     # then log out and back in
 ```
 
+## The interactive mode
+
+Type `pnp` on its own in a terminal and it opens a file browser for the folder you're in:
+
+```
+    ____  _   ______
+   / __ \/ | / / __ \
+  / /_/ /  |/ / /_/ /
+ / ____/ /|  / ____/
+/_/   /_/ |_/_/          p = np. now what?   pnp 0.1.0-alpha.4
+Folder:        /home/you/documents
+Code cylinder: /media/you/KEYS
+--------------------------------------------------------------------------------
+    ../                                        folder
+[ ] report.pdf                                 2.1 MB
+[x] tax-2026.xlsx                              40.0 KB
+[ ] taxes-2025.xlsx.pnp                        encrypted, key found
+--------------------------------------------------------------------------------
+Enter: encrypt. Writes report.pdf.pnp here
+and its key to /media/you/KEYS/report.pdf.pnp.key
+```
+
+- **Move** with the arrow keys (or `j`/`k`), **select** files with Space, **open** a folder with Enter, go
+  **up** with Backspace. `.` shows hidden files, `q` quits.
+- **Enter on files to encrypt** shows exactly what will be written before anything is: each `.pnp` file and
+  where its key goes. There you choose where the key goes, whether to split it into shares (each share on a
+  different drive), and whether to lock it with a passphrase (pnp can make one for you).
+- **Enter on `.pnp` files** shows which key decrypting will use, on which drive, before it does. pnp matches
+  each file to its key by the ID they share, so renamed files are still matched, and shares spread over
+  several drives are all found. If a key or a share is missing, it says which, and skips that file.
+- **The code cylinder** (your key drive, see [docs/code-cylinder.md](docs/code-cylinder.md)) is found among the
+  drives mounted in `/media/$USER` or `/run/media/$USER`, preferring one labelled `KEYS`. Press `c` to choose
+  another drive or type a folder, and `r` to look again after plugging a drive in. pnp looks for keys at the top
+  of each drive and beside the `.pnp` file.
+
+It runs the same encryption and decryption as the commands above, with the same checks.
+
 ## Options
 
 | Option | Meaning |
@@ -121,7 +159,7 @@ sudo usermod -aG pnp $USER     # then log out and back in
 | `--key-out PATH` | Write the key straight into the folder `PATH` (as `FILE.pnp.key`), or to the file name `PATH`, instead of beside the ciphertext. With `--shares`: once for all shares (a folder), or once per share |
 | `--shares N` | Write the key as `N` shares (2 to 16) instead of one key file. Every share is needed to decrypt |
 | `--protect` | Also lock the key (or each share) with a passphrase, asked for twice. Decrypting asks for it. See [Locking a key with a passphrase](#locking-a-key-with-a-passphrase) |
-| `--kdf-memory MIB` | With `--protect`: the memory each passphrase guess costs, in MiB (default 1024, 8 to 65536). The decrypting computer needs this much free memory |
+| `--kdf-memory MIB` | With `--protect`: the memory each passphrase guess costs, in MiB (default 1024, 8 to 65536). The decrypting computer needs this much free memory; pnp checks before it starts |
 | `--passphrase-file FILE` | Read the passphrase from the first line of `FILE` instead of asking (for scripts). Anyone who can read that file has the passphrase |
 | `--gen-passphrase[=WORDS]` | Print a random passphrase of 7 words (or `WORDS`, 5 to 20) and exit |
 | `-f`, `--force` | Replace files that already exist. Without it, pnp never replaces anything |
@@ -208,8 +246,14 @@ did, they'd be left holding the plain key, exactly as without `--protect`: the o
   same hardware randomness as the pad: 7 words is about 90 bits, far beyond guessing. Write it down and keep it
   apart from the key.
 - **Forget the passphrase and the file is gone**, just as if the key were lost.
-- **Decrypting needs the memory too**: 1 GiB by default. On a smaller machine, choose less when encrypting
-  (`--kdf-memory 256`), which makes each guess cheaper as well.
+- **Decrypting needs the memory too**: 1 GiB by default. pnp checks there's enough free memory before it starts,
+  and stops with a message if not. On a smaller machine, choose less when encrypting (`--kdf-memory 256`), which
+  makes each guess cheaper as well.
+- **More memory makes each guess costlier still.** `--kdf-memory 51200` (50 GiB) costs an attacker about 2,500
+  times more per guess than the default, and pnp uses every CPU core for it: on a 32-core machine it takes about
+  30 seconds. But every computer you'll ever decrypt on needs 50 GiB free, or the file can't be opened there. A
+  longer passphrase is the cheaper gain: each extra `--gen-passphrase` word multiplies the guessing work by
+  7776, at no cost to you.
 - pnp still checks the key belongs to the file before asking for the passphrase, and says "wrong passphrase" at
   once instead of after decrypting. Changes to a locked key are caught by the integrity check, as for any key.
 
@@ -243,7 +287,9 @@ building from source is the safest way to get pnp:
    standard C library, so the whole program can be reviewed by hand. Check above all how the key is generated
    (only hardware random sources) and that nothing is sent over the network. The optional passphrase lock
    (`--protect`: src/protect.c, kdf.c, blake2b.c, chacha20.c) is the only part that relies on problems being hard,
-   and it only ever adds to the pad's protection.
+   and it only ever adds to the pad's protection. The interactive mode (src/tui.c) is the largest file but never
+   touches key bytes: it only reads file headers to match files with keys, then calls the same functions as the
+   command line.
 3. Build it yourself with your distribution's own compiler (`make`, then `sudo make install`).
 
 The installed apt package is fine for everyday use as long as P ≠ NP, or as long as no practical algorithm exists.

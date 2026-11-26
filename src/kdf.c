@@ -12,8 +12,10 @@
 #include "kdf.h"
 #include "blake2b.h"
 
+#include <pthread.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 /* the big buffers: mmap'd (so they go back to the system at once), kept out of core dumps, wiped when done */
 static void *big_alloc(size_t n)
@@ -270,6 +272,20 @@ static void fill_segment(const struct argon2 *a, uint32_t pass, uint32_t lane, u
     explicit_bzero(&addr, sizeof addr);
 }
 
+/* one thread's share of a slice: lanes first, first + step, first + 2 step... */
+struct lanes_job {
+    const struct argon2 *a;
+    uint32_t pass, slice, first, step;
+};
+
+static void *run_lanes(void *arg)
+{
+    const struct lanes_job *j = arg;
+    for (uint32_t l = j->first; l < j->a->lanes; l += j->step)
+        fill_segment(j->a, j->pass, l, j->slice);
+    return NULL;
+}
+
 int pnp_argon2id(uint8_t *out, size_t outlen, const uint8_t *pwd, size_t pwdlen, const uint8_t *salt, size_t saltlen,
                  const uint8_t *secret, size_t secretlen, const uint8_t *ad, size_t adlen, uint32_t m_kib, uint32_t t,
                  uint32_t lanes)
@@ -317,12 +333,28 @@ int pnp_argon2id(uint8_t *out, size_t outlen, const uint8_t *pwd, size_t pwdlen,
             load_block(&a.mem[(size_t)l * a.q + j], blk);
         }
     }
-    /* lanes one after another within each slice: they only reference other lanes' finished slices, so this gives
-     * the same result as computing them in parallel */
-    for (uint32_t pass = 0; pass < t; pass++)
-        for (uint32_t slice = 0; slice < 4; slice++)
-            for (uint32_t l = 0; l < lanes; l++)
-                fill_segment(&a, pass, l, slice);
+    /* Within a slice the lanes are independent (each only references other lanes' finished slices), so they run in
+     * parallel: thread i takes lanes i, i + n, i + 2n... Every thread finishes the slice before the next starts. */
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    uint32_t nth = cpus < 1 ? 1 : (uint32_t)cpus < lanes ? (uint32_t)cpus : lanes;
+    struct lanes_job job[255];
+    pthread_t th[255];
+    for (uint32_t pass = 0; pass < t; pass++) {
+        for (uint32_t slice = 0; slice < 4; slice++) {
+            int started[255] = {0};
+            for (uint32_t i = 0; i < nth; i++)
+                job[i] = (struct lanes_job){&a, pass, slice, i, nth};
+            for (uint32_t i = 1; i < nth; i++)
+                started[i] = pthread_create(&th[i], NULL, run_lanes, &job[i]) == 0;
+            run_lanes(&job[0]);
+            for (uint32_t i = 1; i < nth; i++) {
+                if (started[i])
+                    pthread_join(th[i], NULL);
+                else
+                    run_lanes(&job[i]); /* no thread could be made: do its lanes here */
+            }
+        }
+    }
 
     /* C = XOR of each lane's last block; tag = H'^T(C) */
     struct block c = a.mem[a.q - 1];

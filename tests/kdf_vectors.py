@@ -48,7 +48,7 @@ for n, ol in [(0, 64), (3, 64), (127, 32), (128, 64), (129, 1), (1000, 48)]:
     print(f'    {{{n}, {ol}, "{hashlib.blake2b(msg(n), digest_size=ol).hexdigest()}"}},')
 
 print("/* Argon2id: {m KiB, passes, lanes, output length, tag of password \"password\", salt \"somesalt\"} */")
-for m, t, p, ol in [(8, 1, 1, 4), (64, 2, 2, 64), (100, 3, 4, 65), (4096, 2, 3, 128)]:
+for m, t, p, ol in [(8, 1, 1, 4), (64, 2, 2, 64), (100, 3, 4, 65), (4096, 2, 3, 128), (65536, 2, 8, 32)]:
     tag = hash_secret_raw(b"password", b"somesalt", t, m, p, ol, Type.ID).hex()
     print(f'    {{{m}, {t}, {p}, {ol}, "{tag}"}},')
 
@@ -60,10 +60,10 @@ print("/* ChaCha20: key 0x00..0x1f, nonce 000000000000004a00000000: the first 20
 ks = chacha(bytes(range(32)), bytes(7) + bytes([0x4A]) + bytes(4), 200)
 print(f'    "{ks.hex()}"')
 
-# --protect's whole derivation (src/protect.c), passphrase "correct horse", salt 0x10..0x1f, 8 MiB settings
+# --protect's whole derivation (src/protect.c), passphrase "correct horse", salt 0x10..0x1f, 8 MiB, 4 lanes
 salt = bytes(range(16, 32))
 b = balloon(b"correct horse", salt, 8 * 256, 2)
-a = hash_secret_raw(b, salt, 2, 8 * 1024, 1, 64, Type.ID)
-print("/* --protect, 8 MiB: wrapping key, check value, then share 3's first 64 keystream bytes */")
+a = hash_secret_raw(b, salt, 2, 8 * 1024, 4, 64, Type.ID)
+print("/* --protect, 8 MiB, 4 lanes: wrapping key, check value, then share 3's first 64 keystream bytes */")
 print(f'    "{a[:32].hex()}", "{a[32:48].hex()}",')
 print(f'    "{chacha(a[:32], (3).to_bytes(4, "little") + bytes(8), 64).hex()}"')

@@ -68,6 +68,7 @@ static const struct {
     {4096, 2, 3, 128, "ee3a2ac34ed2a58ed7a26373536cadca694084096223d073f0bce787b1e9fbad866c09625c68217355916b044c5926a0f035"
                       "23ce662c693d4a652cd2c2f6e3492e2f0b731c307804794bc45d58ea24e7b76be33dc02d63b8bf7d55a49b2b730e8a28a7f0"
                       "cca46048041c3a28564fc3470071a702f06a1db687aa2e66f34db24e"},
+    {65536, 2, 8, 32, "1e135170a840d1dd25cd94c1163e8b1aaba0a15fbb595e7cc49b905eb0381175"},
 };
 
 static const struct {
@@ -169,26 +170,30 @@ int main(void)
     p.balloon_rounds = 2;
     p.argon_kib = 8 * 1024;
     p.argon_passes = 2;
+    p.argon_lanes = 4; /* computed by up to 4 threads: the result must be the same as the reference's */
     for (int i = 0; i < 16; i++)
         p.salt[i] = (uint8_t)(16 + i);
     check(pnp_protect_lock(&p, "correct horse", 13, wkey) == 0 &&
-              same_hex(wkey, 32, "f58c47fd00a53555f3d1a434bf29c5bafc7f98437900e2b65ce16a2df9920b37") &&
-              same_hex(p.check, 16, "1726befff269fd0b8d8a728468075f91"),
+              same_hex(wkey, 32, "dd6f1932ca4b460647180d7b0c3aa5952db3e89a0e41d6a2afc33384a5cb922d") &&
+              same_hex(p.check, 16, "be97b5c1a7b6d8a2c9eec7b74339d9a2"),
           "--protect's key and check value are Argon2id(Balloon(passphrase)), as computed independently");
     memset(out, 0, 64);
     pnp_protect_stream(&c, wkey, 3);
     pnp_chacha20_xor(&c, out, 64);
-    check(same_hex(out, 64, "a6bbb177102827ab3b7cdf5d8248a540eb7611a96990c5b5cff7201f5659af48dbc77447b84f3d7233a87f72"
-                            "79fe4a862216697cd1f27a1ffdf79e7ae47a9eb2"),
+    check(same_hex(out, 64, "8e7f70bb1af82eaf13fcb0d911fecafd5fbe0e68e3f512219058b74376260fb12fe3a2dd0427c7ef6579ff9e"
+                            "83500188e6b359a102c5af042b75daa699f25639"),
           "share 3's keystream uses nonce LE32(3) || zeros");
     pnp_protect_encode(&p, enc);
     check(pnp_protect_decode(&q, enc) == 0 && memcmp(&p, &q, sizeof p) == 0, "the protection block decodes as encoded");
     check(pnp_protect_unlock(&q, "correct horse", 13, wkey) == 0, "the right passphrase unlocks");
     check(pnp_protect_unlock(&q, "correct horsf", 13, wkey) == -2, "a wrong passphrase is told apart by the check");
-    enc[16] ^= 1; /* the salt */
+    enc[20] ^= 1; /* the salt */
     check(pnp_protect_decode(&q, enc) == 0 && pnp_protect_unlock(&q, "correct horse", 13, wkey) == -2,
           "a changed salt fails the check");
-    enc[16] ^= 1;
+    enc[20] ^= 1;
+    enc[16] = 65; /* 65 lanes: above pnp's 64 */
+    check(pnp_protect_decode(&q, enc) < 0, "more Argon2id lanes than pnp accepts are refused");
+    enc[16] = 4;
     enc[8] = 8, enc[9] = 0, enc[10] = 0, enc[11] = 0; /* Argon2id memory 8 KiB: below pnp's 8 MiB */
     check(pnp_protect_decode(&q, enc) < 0, "settings below pnp's minimum are refused");
     enc[8] = 0, enc[9] = 0, enc[10] = 0, enc[11] = 0x10; /* 256 GiB: above the maximum */

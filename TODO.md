@@ -25,6 +25,7 @@ Planned work for pnp, roughly in priority order.
 - [x] An optional passphrase lock on keys (`--protect`: Balloon then Argon2id, then ChaCha20), to slow down
   whoever steals a key file, plus `--gen-passphrase`. Computationally secure only, so it's an extra on top of the
   pad, never part of the P = NP claim.
+- [x] An interactive mode (`pnp` alone): browse, select, see what will be written or which key will be used.
 - [ ] TPM 2.0 (`/dev/tpmrm0`) as an extra hardware source, for machines whose TPM isn't already behind
   `/dev/hwrng`.
 - [ ] A progress display for large files when the hardware source is slow.

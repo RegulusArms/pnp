@@ -73,7 +73,7 @@ bytes:
 
 ## Protected keys
 
-With `--protect`, a key or share carries a 48-byte **protection block** after its header, and its body (the key
+With `--protect`, a key or share carries a 52-byte **protection block** after its header, and its body (the key
 material, or the share body) is encrypted. The magic says so: `PNPKP002` for a protected key, `PNPSP002` for a
 protected share. The ciphertext is unchanged.
 
@@ -82,15 +82,16 @@ protected share. The ciphertext is unchanged.
 | 0                                        | 4      | Balloon space cost: 64-byte blocks (LE32)     |
 | 4                                        | 4      | Balloon rounds (LE32)                         |
 | 8                                        | 4      | Argon2id memory in KiB (LE32)                 |
-| 12                                       | 4      | Argon2id passes (LE32); always one lane       |
-| 16                                       | 16     | salt (random for each encryption)             |
-| 32                                       | 16     | check value                                   |
+| 12                                       | 4      | Argon2id passes (LE32)                        |
+| 16                                       | 4      | Argon2id lanes (LE32)                         |
+| 20                                       | 16     | salt (random for each encryption)             |
+| 36                                       | 16     | check value                                   |
 
 The body follows: the same 32 + n bytes as an unprotected key or share body, XORed with a ChaCha20 keystream.
 
 ```
 b      = Balloon-BLAKE2b(passphrase, salt, space cost, rounds, delta = 3)   (64 bytes)
-a      = Argon2id(password = b, salt, memory, passes, lanes = 1, no secret, no associated data, 64 bytes)
+a      = Argon2id(password = b, salt, memory, passes, lanes, no secret, no associated data, 64 bytes)
 key    = a[0..31]
 check  = a[32..47]
 nonce  = LE32(share number, or 0 for a whole key) || 8 zero bytes
@@ -103,7 +104,10 @@ body   = (key material) XOR ChaCha20(key, nonce, block counter from 0)      (RFC
   hash(block m−1 (cyclically) || block m), and three times (i = 0, 1, 2): other = hash(salt || LE64(t) || LE64(m) ||
   LE64(i)) read as a little-endian integer, mod the number of blocks; block m = hash(block m || block other). The
   result is the last block.
-- **Argon2id** is version 0x13 from RFC 9106.
+- **Argon2id** is version 0x13 from RFC 9106. pnp makes one lane per CPU of the encrypting computer (at most 64)
+  and computes the lanes in parallel threads. The lanes are a parameter of the hash, so the same number is used to
+  decrypt, on any computer: one with fewer cores computes them a few at a time, more slowly, with the same result.
+  They don't change an attacker's work per guess, which is set by the memory and passes.
 - The passphrase is the bytes typed (or the first line of `--passphrase-file`, without its `\n` or `\r\n`),
   with no Unicode normalisation.
 - All the shares of one encryption have the same protection block (same salt, so the passphrase is hashed once);
@@ -111,10 +115,11 @@ body   = (key material) XOR ChaCha20(key, nonce, block counter from 0)      (RFC
 - The check value lets pnp reject a wrong passphrase before decrypting anything. Changing the settings or the salt
   changes the key and so fails the check. Damage to the encrypted body isn't caught here but by the
   [integrity check](#the-integrity-check), as for an unprotected key.
-- pnp accepts Argon2id memory from 8 MiB to 64 GiB, up to 1 GiB for Balloon, and up to 16 passes or rounds, so a
-  damaged or hostile key can't make it allocate terabytes or run for days. It writes 1 GiB with 2 passes and
-  16 MiB with 2 rounds by default (`--kdf-memory` sets the Argon2id memory; Balloon gets 1/64 of it, at most
-  16 MiB).
+- pnp accepts Argon2id memory from 8 MiB to 64 GiB, up to 64 lanes, up to 1 GiB for Balloon, and up to 16 passes
+  or rounds, so a damaged or hostile key can't make it allocate terabytes or run for days. It writes 1 GiB with
+  2 passes and 16 MiB with 2 rounds by default (`--kdf-memory` sets the Argon2id memory; Balloon gets 1/64 of it,
+  at most 16 MiB). Before hashing, it checks that much memory is free (`MemAvailable` in `/proc/meminfo`) and
+  stops with a message if not, rather than swapping for hours.
 - ChaCha20 has a 32-bit block counter, so one keystream covers 256 GiB: `--protect` refuses larger files.
 - **This layer is only computationally secure.** It makes a stolen key file expensive to use; it isn't part of
   the information-theoretic guarantee, which rests on the pad, the one-time MAC and the shares alone.
@@ -151,14 +156,14 @@ def unwrap(data, passphrase):
     share = data[:8] == b"PNPSP002"
     assert share or data[:8] == b"PNPKP002"
     hdr = 26 if share else 24
-    p = data[hdr:hdr + 48]
-    blocks, rounds, kib, passes = (int.from_bytes(p[i:i + 4], "little") for i in (0, 4, 8, 12))
-    salt, check = p[16:32], p[32:48]
-    a = hash_secret_raw(balloon(passphrase, salt, blocks, rounds), salt, passes, kib, 1, 64, Type.ID)
+    p = data[hdr:hdr + 52]
+    blocks, rounds, kib, passes, lanes = (int.from_bytes(p[i:i + 4], "little") for i in (0, 4, 8, 12, 16))
+    salt, check = p[20:36], p[36:52]
+    a = hash_secret_raw(balloon(passphrase, salt, blocks, rounds), salt, passes, kib, lanes, 64, Type.ID)
     assert a[32:48] == check, "wrong passphrase"
     nonce = (data[24] if share else 0).to_bytes(4, "little") + bytes(8)
     # the library takes the 32-bit block counter (0) before the 12-byte nonce
-    return Cipher(algorithms.ChaCha20(a[:32], bytes(4) + nonce), None).decryptor().update(data[hdr + 48:])
+    return Cipher(algorithms.ChaCha20(a[:32], bytes(4) + nonce), None).decryptor().update(data[hdr + 52:])
 ```
 
 Then use `unwrap(...)` in place of `key[24:]` (or of each `s[26:]`) in the example under

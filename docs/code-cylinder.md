@@ -99,6 +99,9 @@ This erases everything on the drive. **Check the device name twice:** choosing t
 
 ## Using it
 
+The easiest way is pnp's interactive mode: type `pnp` in the folder with your files. It finds the drive by its
+`KEYS` label, writes new keys straight to it, and shows which key on it each `.pnp` file will be decrypted with.
+
 - **Always write keys straight to the drive** with `--key-out /media/$USER/KEYS`. Without it, the key is written
   beside the ciphertext, on the computer's own disk, and a deleted file there may stay recoverable.
 - **Plug it in only while you encrypt or decrypt**, then unmount and unplug it (eject it in your file manager, or
