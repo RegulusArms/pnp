@@ -505,9 +505,18 @@ PNP_TEST_PROGRESS=1 "$PNP" -f "$T/w/f" 2>"$T/err"
 check '! grep -q "%" "$T/pty.out" && ! grep -q "%" "$T/err"' "no progress line with -q, or when stderr isn't a terminal"
 (cd "$T/w" && TERM=xterm PNP_TEST_PROGRESS=1 script -qec "$PNP -f --protect --kdf-memory 8 --passphrase-file $T/pass f" \
     "$T/pty.out" >/dev/null 2>&1)
-check 'grep -q "hashing the passphrase: Balloon .*100%" "$T/pty.out" &&
-       grep -q "hashing the passphrase: Argon2id .*100%" "$T/pty.out"' \
+check 'grep -q "hashing passphrase: Balloon .*100%" "$T/pty.out" &&
+       grep -q "hashing passphrase: Argon2id .*100%" "$T/pty.out"' \
     "--protect shows the passphrase hashes' progress (Balloon, then Argon2id)"
+# a line wider than the terminal wraps, and can't be redrawn in place: each redraw would leave a line behind
+longname="a-file-with-a-rather-long-name-for-a-narrow-terminal.bin"
+cp "$T/w/orig" "$T/w/$longname"
+(cd "$T/w" && TERM=xterm PNP_TEST_PROGRESS=1 script -qec "stty cols 50; $PNP -f --protect --kdf-memory 8 \
+    --passphrase-file $T/pass $longname" "$T/pty.out" >/dev/null 2>&1)
+check 'tr "\r" "\n" <"$T/pty.out" | grep -a "^.\[Kpnp: .*%" | sed "s/^.\[K//" >"$T/lines" &&
+       grep -q "encrypting.*\[.*>" "$T/lines" && grep -q "Argon2id  \[.*>" "$T/lines" &&
+       ! awk "length(\$0) > 49" "$T/lines" | grep -q .' \
+    "on a narrow terminal (50 columns), the progress lines still have a bar and never wrap"
 
 # --- the shipped binary has no test hooks
 check 'grep -qa PNP_TEST_HWRNG "$B/pnp-test" && ! grep -qa PNP_TEST_ "$B/pnp"' \

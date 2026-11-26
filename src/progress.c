@@ -50,6 +50,25 @@ static void time_text(double s, char *b, size_t len)
         snprintf(b, len, "%lds", t);
 }
 
+/* the columns of the first n bytes of s (-1: all), one per UTF-8 character; and the bytes of its first c columns */
+static int cols_of(const char *s, int n)
+{
+    int c = 0;
+    for (int i = 0; s[i] && (n < 0 || i < n); i++)
+        c += ((unsigned char)s[i] & 0xc0) != 0x80;
+    return c;
+}
+
+static int bytes_of(const char *s, int c)
+{
+    int i = 0;
+    for (int seen = 0; s[i]; i++) {
+        if (((unsigned char)s[i] & 0xc0) != 0x80 && seen++ == c)
+            break;
+    }
+    return i;
+}
+
 static void draw(struct pnp_progress *p)
 {
     struct winsize w;
@@ -67,23 +86,48 @@ static void draw(struct pnp_progress *p)
         snprintf(left, sizeof left, "  %s left", t);
     }
     int pct = p->total ? (int)(p->done * 100 / p->total) : 100;
-    if (!p->bytes)
+    /* the sizes and speed are the first to go when the terminal is too narrow for them and a bar */
+    int namemin = cols_of(p->name, -1) < 12 ? cols_of(p->name, -1) : 12;
+    int compact = !p->bytes || cols - 1 - (int)(strlen("pnp: ") + strlen(p->verb) + 1 + 2 + 4 + 10) - namemin < 44;
+    if (compact)
         snprintf(right, sizeof right, "%3d%%%s", pct, left);
     else if (rate > 0)
         snprintf(right, sizeof right, "%3d%%  %s of %s  %s/s%s", pct, done, total, speed, left);
     else
         snprintf(right, sizeof right, "%3d%%  %s of %s", pct, done, total);
 
-    /* "pnp: VERB NAME  [bar]  RIGHT", fitted to the width: the name is shortened first, then the bar dropped */
-    int fixed = (int)(strlen("pnp: ") + strlen(p->verb) + 1 + 2 + strlen(right));
-    int namew = (int)strlen(p->name), barw = cols - 1 - fixed - namew - 4;
-    if (barw < 10 && namew > 20) {
-        namew = 20;
-        barw = cols - 1 - fixed - namew - 4;
+    /* "pnp: VERB NAME  [bar]  RIGHT", fitted to the width so it never wraps (a wrapped line can't be redrawn in
+     * place: "\r" only goes back to the start of its last row). The bar goes first, then the name is shortened,
+     * then whatever still doesn't fit is cut off. */
+    /* What gives way, in order, so the bar stays: on a file's line the name is shortened (to 12 columns at
+     * least), on the passphrase hashing's line the label goes ("hashing passphrase:"); only then the bar. */
+    const char *verb = p->verb;
+    int base = (int)(strlen("pnp: ") + 2 + strlen(right)), vlen = (int)strlen(verb) + 1;
+    int namelen = cols_of(p->name, -1), namew = namelen, barw = 0;
+    int avail = cols - 1 - base - vlen;
+    if (avail >= namelen + 4 + 10) {
+        barw = avail - namelen - 4;
+    } else if (p->bytes && avail >= 12 + 4 + 10) { /* name and bar share the room */
+        barw = (avail - 4) / 2 < 10 ? 10 : (avail - 4) / 2;
+        namew = avail - 4 - barw < 12 ? 12 : avail - 4 - barw;
+        barw = avail - 4 - namew;
+    } else if (!p->bytes && cols - 1 - base >= namelen + 4 + 6) { /* a shorter bar is fine here */
+        verb = "";
+        barw = cols - 1 - base - namelen - 4;
+    } else { /* no room for a bar: as much of the rest as fits (a file's line keeps "encrypting" if it can) */
+        if (avail < namelen && !(p->bytes && avail >= 12)) {
+            verb = "";
+            avail = cols - 1 - base;
+        }
+        if (avail < namelen)
+            namew = avail > 1 ? avail : 1;
     }
-    int n = snprintf(line, sizeof line, "\r\033[Kpnp: %s %.*s%s  ", p->verb, namew, p->name,
-                     namew < (int)strlen(p->name) ? "~" : "");
-    if (barw >= 10 && barw < (int)sizeof line - n - (int)strlen(right) - 8) {
+    if (barw > 50)
+        barw = 50;
+    int nb = namew < namelen ? bytes_of(p->name, namew - 1) : (int)strlen(p->name);
+    int n = snprintf(line, sizeof line, "\r\033[Kpnp: %s%s%.*s%s  ", verb, verb[0] ? " " : "", nb, p->name,
+                     namew < namelen ? "~" : "");
+    if (barw) {
         int fill = p->total ? (int)((double)p->done / (double)p->total * barw) : barw;
         line[n++] = '[';
         for (int i = 0; i < barw; i++)
@@ -93,6 +137,10 @@ static void draw(struct pnp_progress *p)
         line[n++] = ' ';
     }
     n += snprintf(line + n, sizeof line - (size_t)n, "%s", right);
+    /* the last resort on a very narrow terminal: cut at cols - 1 columns (the 4 bytes of "\r\033[K" take none) */
+    int keep = 4 + bytes_of(line + 4, cols - 1);
+    if (n > keep)
+        n = keep;
     if (n > 0 && write(STDERR_FILENO, line, (size_t)n) < 0) {
         /* nothing to do: the line is only a courtesy */
     }

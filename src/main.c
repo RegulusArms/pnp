@@ -489,7 +489,7 @@ static void kdf_progress(const char *phase, uint64_t done, uint64_t total)
     if (phase != kdf_phase) {
         pnp_progress_end(&kdf_prog);
         kdf_phase = phase;
-        pnp_progress_start_steps(&kdf_prog, "hashing the passphrase:", phase, total, !quiet);
+        pnp_progress_start_steps(&kdf_prog, "hashing passphrase:", phase, total, !quiet);
     }
     pnp_progress_set(&kdf_prog, done);
 }
