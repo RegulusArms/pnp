@@ -1,0 +1,17 @@
+#!/bin/sh
+# pnp's post-install: the pnp group, and applying the udev rule that lets it read /dev/hwrng.
+set -e
+if [ "$1" = configure ]; then
+    if ! getent group pnp >/dev/null; then
+        groupadd --system pnp
+    fi
+    # only where udev is running (not in containers, chroots or image builds); never fail the install over it
+    if [ -d /run/udev ] && command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=misc --sysname-match=hw_random >/dev/null 2>&1 || true
+    fi
+    if [ -e /dev/hwrng ]; then
+        echo "pnp: to let a user make pads from /dev/hwrng: sudo usermod -aG pnp USER, then log out and back in."
+    fi
+fi
+exit 0
