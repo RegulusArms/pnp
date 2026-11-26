@@ -2,7 +2,9 @@
 #   push to DEV           → replaces the "dev-latest" pre-release, and publishes to the apt "dev" suite
 #   pull request to main  → tests and build only (the .deb is kept as a workflow artifact)
 #   push to main (merge)  → release v<VERSION>, and publishes to the apt "stable" suite, unless that tag exists already
-# A failing test means no package; a package failing its install check on any release isn't published to apt.
+# A failing test, static-analysis finding or fuzzing crash means no package; a package failing its install check on
+# any release isn't published to apt. The package is built twice and must come out identical (reproducible builds,
+# docs/reproducible.md); releases carry SHA256SUMS signed with the apt repo's key.
 # A push or pull request that only changes documentation (see "on:") doesn't start it at all.
 #
 # One .deb for every release: it's built on the oldest supported one (ubuntu:22.04, glibc 2.34+), and glibc is
@@ -54,13 +56,17 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install build tools
-        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential
+        # on the build release, gcc-12 as well: the .deb is built with it (its hardening flags, see the Makefile)
+        run: |
+          apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential
+          if [ "${{ matrix.image }}" = "ubuntu:22.04" ]; then DEBIAN_FRONTEND=noninteractive apt-get install -y gcc-12; fi
 
       - name: Test
         run: |
           useradd -m tester
           chown -R tester .
-          su tester -c "make WERROR=1 test"
+          cc=cc; [ "${{ matrix.image }}" = "ubuntu:22.04" ] && cc=gcc-12
+          su tester -c "make WERROR=1 CC=$cc test"
 
       - name: Test with sanitizers
         # the same tests built with AddressSanitizer and UndefinedBehaviorSanitizer: memory errors and undefined
@@ -68,13 +74,55 @@ jobs:
         if: matrix.image == 'ubuntu:26.04'
         run: su tester -c "make sanitize"
 
+  analyze:
+    # static analysis: gcc -fanalyzer, cppcheck, clang's scan-build (make analyze). Any finding fails the run.
+    runs-on: ubuntu-24.04
+    container: mirror.gcr.io/library/ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the analysers
+        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential clang clang-tools cppcheck
+
+      - name: Analyse
+        run: make analyze
+
+  fuzz:
+    # a short fuzzing run of every parser of untrusted input (tests/fuzz/), from valid files as seeds. A crash fails
+    # the run, and the input that caused it is kept as a workflow artifact (replay: build/fuzz/replay_NAME FILE).
+    runs-on: ubuntu-24.04
+    container: mirror.gcr.io/library/ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install clang
+        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential clang
+
+      - name: Fuzz
+        run: |
+          useradd -m fuzzer
+          chown -R fuzzer .
+          su fuzzer -c "make fuzz-run FUZZ_SECONDS=60"
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: fuzz-crashes
+          path: build/fuzz/crash-*
+
   deb:
-    needs: test
+    needs: [test, analyze, fuzz]
     runs-on: ubuntu-24.04
     container: mirror.gcr.io/library/ubuntu:22.04   # = BUILD_IMAGE (env can't be used here)
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
+      - name: Install build tools
+        # gcc-12 (universe) on the oldest release: _FORTIFY_SOURCE=3 and zeroed local variables, which gcc 11 lacks,
+        # with the same glibc, so the .deb still installs everywhere
+        # git before the checkout, so it's a real clone: the build takes its timestamp from the commit
+        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential gcc-12 git
+
       - uses: actions/checkout@v7
 
       - name: Version
@@ -89,20 +137,47 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "deb=$deb" >> "$GITHUB_OUTPUT"
 
-      - name: Install build tools
-        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential
-
       - name: Build
+        # SOURCE_DATE_EPOCH: the commit's time, so anyone can rebuild the same .deb (docs/reproducible.md)
         run: |
+          git config --global --add safe.directory "$PWD"
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           useradd -m builder
           chown -R builder .
-          su builder -c "make WERROR=1 deb DEB_VERSION='${{ steps.ver.outputs.deb }}' SOURCE_DATE_EPOCH=$(git log -1 --format=%ct 2>/dev/null || date +%s)"
+          su builder -c "make WERROR=1 CC=gcc-12 deb DEB_VERSION='${{ steps.ver.outputs.deb }}' SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
           dpkg-deb -I build/*.deb
+
+      - name: Build again and compare
+        # a second build in another folder, with another umask, must give the same bytes
+        run: |
+          cp -r . /tmp/rebuild && rm -rf /tmp/rebuild/build && chown -R builder /tmp/rebuild
+          su builder -c "cd /tmp/rebuild && umask 077 && make WERROR=1 CC=gcc-12 deb DEB_VERSION='${{ steps.ver.outputs.deb }}' SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >/dev/null
+          sha256sum build/*.deb /tmp/rebuild/build/*.deb
+          cmp build/*.deb /tmp/rebuild/build/*.deb || { echo "::error::the two builds differ: the build isn't reproducible"; exit 1; }
+
+      - name: Build info
+        # what a rebuild needs to give the same bytes (docs/reproducible.md): the commit, the timestamp, the tools
+        run: |
+          deb=$(basename build/*.deb .deb)
+          {
+            echo "Package: $deb.deb"
+            echo "Source: https://github.com/${{ github.repository }} commit $GITHUB_SHA"
+            echo "SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH"
+            echo "DEB_VERSION: ${{ steps.ver.outputs.deb }}"
+            echo "Build: make WERROR=1 CC=gcc-12 deb DEB_VERSION=... SOURCE_DATE_EPOCH=..., in $BUILD_IMAGE"
+            echo "SHA256: $(sha256sum build/*.deb | cut -d' ' -f1)"
+            echo "Tools:"
+            dpkg-query -W -f='  ${Package} ${Version}\n' gcc-12 cpp-12 binutils libc6-dev dpkg-dev dpkg xz-utils gzip make sed coreutils
+          } > "build/$deb.buildinfo"
+          cat "build/$deb.buildinfo"
 
       - uses: actions/upload-artifact@v7
         with:
           name: pnp-deb
-          path: build/*.deb
+          path: |
+            build/*.deb
+            build/*.buildinfo
 
   package:
     # the .deb installed on clean systems of every supported release: it installs, works as a normal user, and
@@ -139,6 +214,22 @@ jobs:
           name: pnp-deb
           path: debs
 
+      - name: Signed checksums
+        # SHA256SUMS of the .deb and its build info, signed with the apt repo's key (pnp.asc), for anyone who
+        # downloads the .deb from the release instead of through apt. Check:
+        #   gpg --verify SHA256SUMS.asc SHA256SUMS && sha256sum -c --ignore-missing SHA256SUMS
+        if: github.event_name == 'push'
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          [[ -n "$APT_GPG_PRIVATE_KEY" ]] || { echo "::error::The APT_GPG_PRIVATE_KEY secret isn't set"; exit 1; }
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          cd debs
+          sha256sum *.deb *.buildinfo > SHA256SUMS
+          gpg --batch --yes --armor --local-user B605C24B0B68BEF13104D1048A29173719C44365 --detach-sign -o SHA256SUMS.asc SHA256SUMS
+          gpg --batch --verify SHA256SUMS.asc SHA256SUMS
+          cat SHA256SUMS
+
       - name: Replace the dev pre-release
         id: dev
         if: github.event_name == 'push' && github.ref == 'refs/heads/DEV'
@@ -147,7 +238,7 @@ jobs:
           VERSION: ${{ needs.deb.outputs.version }}
         run: |
           gh release delete dev-latest --cleanup-tag --yes || true
-          gh release create dev-latest debs/*.deb --prerelease --target "$GITHUB_SHA" \
+          gh release create dev-latest debs/*.deb debs/*.buildinfo debs/SHA256SUMS debs/SHA256SUMS.asc --prerelease --target "$GITHUB_SHA" \
             --title "Development build ($VERSION, run $GITHUB_RUN_NUMBER)" \
             --notes "Latest build of the DEV branch, commit $GITHUB_SHA. Replaced on every push to DEV. One .deb for Debian 12+, Ubuntu 22.04+ and Linux Mint 21+."
 
@@ -165,7 +256,7 @@ jobs:
           fi
           prerelease=()
           [[ "$TAG" == *-* ]] && prerelease=(--prerelease)   # 0.1.0-alpha.1, -beta.1…
-          gh release create "$TAG" debs/*.deb "${prerelease[@]}" --target "$GITHUB_SHA" \
+          gh release create "$TAG" debs/*.deb debs/*.buildinfo debs/SHA256SUMS debs/SHA256SUMS.asc "${prerelease[@]}" --target "$GITHUB_SHA" \
             --title "pnp $VERSION" --generate-notes
           echo "released=true" >> "$GITHUB_OUTPUT"
 

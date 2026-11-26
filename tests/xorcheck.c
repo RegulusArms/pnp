@@ -10,6 +10,7 @@
  *   - the ciphertext's last 16 bytes are the MAC tag of ID || plaintext.
  * The MAC is recomputed here by plain double-and-add mod 2^127 - 1, not pnp's 64-bit-limb multiplication. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define MAXK 16
@@ -76,36 +77,36 @@ int main(int argc, char **argv)
     FILE *p = fopen(argv[1], "rb"), *c = fopen(argv[2], "rb"), *k[MAXK];
     if (!p || !c) {
         fprintf(stderr, "xorcheck: can't open a file\n");
-        return 2;
+        exit(2);
     }
     unsigned char hc[24], hk[26], key[32] = {0}, t[32];
     int seen[MAXK + 1] = {0};
     if (fread(hc, 1, 24, c) != 24 || memcmp(hc, "PNPCT002", 8) != 0) {
         fprintf(stderr, "xorcheck: bad ciphertext header\n");
-        return 1;
+        exit(1);
     }
     long body = size_of(c) - 24 - 16;
     for (int i = 0; i < nk; i++) {
         if (!(k[i] = fopen(argv[3 + i], "rb"))) {
             fprintf(stderr, "xorcheck: can't open %s\n", argv[3 + i]);
-            return 2;
+            exit(2);
         }
         size_t hl = shares ? 26 : 24;
         if (fread(hk, 1, hl, k[i]) != hl || memcmp(hk, shares ? "PNPSH002" : "PNPKY002", 8) != 0) {
             fprintf(stderr, "xorcheck: bad header in %s\n", argv[3 + i]);
-            return 1;
+            exit(1);
         }
         if (memcmp(hc + 8, hk + 8, 16) != 0) {
             fprintf(stderr, "xorcheck: IDs differ\n");
-            return 1;
+            exit(1);
         }
         if (shares && (hk[25] != nk || hk[24] < 1 || hk[24] > nk || seen[hk[24]]++)) {
             fprintf(stderr, "xorcheck: bad share number or count in %s\n", argv[3 + i]);
-            return 1;
+            exit(1);
         }
         if (size_of(k[i]) - (long)hl - 32 != body || fread(t, 1, 32, k[i]) != 32) {
             fprintf(stderr, "xorcheck: %s has the wrong size\n", argv[3 + i]);
-            return 1;
+            exit(1);
         }
         for (int j = 0; j < 32; j++)
             key[j] ^= t[j];
@@ -114,7 +115,7 @@ int main(int argc, char **argv)
     u128 s = le(key + 16, 16);
     if (mk >= P || s >= P) {
         fprintf(stderr, "xorcheck: MAC key out of range\n");
-        return 1;
+        exit(1);
     }
     for (int i = 0; i < 16; i++) /* the ID */
         mac_byte(hc[8 + i]);
@@ -124,17 +125,17 @@ int main(int argc, char **argv)
             b ^= fgetc(k[i]);
         if (a == EOF) {
             fprintf(stderr, "xorcheck: plaintext shorter than the ciphertext\n");
-            return 1;
+            exit(1);
         }
         if (b != a) {
             fprintf(stderr, "xorcheck: ciphertext XOR key != plaintext at byte %ld\n", n);
-            return 1;
+            exit(1);
         }
         mac_byte(a);
     }
     if (fgetc(p) != EOF) {
         fprintf(stderr, "xorcheck: plaintext longer than the ciphertext\n");
-        return 1;
+        exit(1);
     }
     if (nblk) {
         memset(blk + nblk, 0, (size_t)(8 - nblk));
@@ -144,11 +145,11 @@ int main(int argc, char **argv)
     unsigned char tag[16];
     if (fread(tag, 1, 16, c) != 16) {
         fprintf(stderr, "xorcheck: no tag\n");
-        return 1;
+        exit(1);
     }
     if (le(tag, 16) != addm(acc, s)) {
         fprintf(stderr, "xorcheck: wrong MAC tag\n");
-        return 1;
+        exit(1);
     }
     return 0;
 }

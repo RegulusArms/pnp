@@ -140,8 +140,9 @@ long pnp_mem_available_mib(void)
 {
     const char *path = "/proc/meminfo";
 #ifdef PNP_TEST
-    if (getenv("PNP_TEST_MEMINFO")) /* test hook: another file in /proc/meminfo's format */
-        path = getenv("PNP_TEST_MEMINFO");
+    const char *fake = getenv("PNP_TEST_MEMINFO");
+    if (fake) /* test hook: another file in /proc/meminfo's format */
+        path = fake;
 #endif
     FILE *f = fopen(path, "re");
     if (!f)

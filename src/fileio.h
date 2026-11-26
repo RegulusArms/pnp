@@ -6,6 +6,13 @@
 #include <stddef.h>
 #include <sys/types.h>
 
+/* test builds: a place pnp can be made to crash at (PNP_TEST_CRASH_AT, fileio.c); nothing otherwise */
+#ifdef PNP_TEST
+void pnp_crash_point(const char *what);
+#else
+#define pnp_crash_point(what) ((void)0)
+#endif
+
 struct pnp_out {
     char *path;   /* the real name */
     char *part;   /* the hidden part it's written under */
@@ -35,5 +42,12 @@ char *pnp_dir_of(const char *path);
 char *pnp_base_of(const char *path);
 /* fsyncs the folder holding path, so the renames survive a crash. */
 void pnp_sync_dir(const char *path);
+/* For a hidden part or moved-aside name (".NAME.XXXXXX.pnp-part" / ".pnp-old"): 0 with NAME in name and *old set,
+ * or -1 if entry isn't one. */
+int pnp_leftover_name(const char *entry, char *name, size_t len, int *old);
+/* Calls found() for each part or moved-aside file left in dir by an interrupted run; returns how many. */
+int pnp_find_leftovers(const char *dir, void (*found)(const char *dir, const char *entry, const char *name, int old,
+                                                      void *ctx),
+                       void *ctx);
 
 #endif

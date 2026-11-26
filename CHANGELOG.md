@@ -2,6 +2,38 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.6
+
+- **`pnp --verify FILE.pnp`** checks a ciphertext against its key or shares (that they belong together, their
+  sizes, and the integrity check over every byte) without writing anything. For checking archives now and then.
+- **A sandbox.** pnp can never open a network connection or run another program, and once a command-line run has
+  its files open, it can only touch the folders its outputs go to (seccomp and Landlock). `-v` says what the
+  kernel allowed.
+- **`--strict`** refuses to run when pad, file or passphrase bytes can't be locked in memory, instead of only
+  warning. More is locked now: the interactive mode's passphrases, short-lived secrets on the stack, and the
+  passphrase hashes' memory when the limit allows.
+- **Leftovers of an interrupted run are pointed out.** If a crash, a kill or a power cut left hidden part files or
+  moved-aside old files in a folder, the next run there lists them and says what to do
+  ([docs/recovery.md](docs/recovery.md)).
+- **The interactive mode notices a swapped key drive**: it remembers the drives it wrote keys to by filesystem
+  UUID, and warns when another drive with the same name (KEYS) shows up.
+- **The integrity check runs in constant time**: its arithmetic had branches that depended on the key and the file
+  ([docs/constant-time.md](docs/constant-time.md)).
+- Fixed: a long run of digits in a terminal key sequence overflowed a counter in the interactive mode.
+- Fixed: when keys went to another folder, the leftovers note listed them under the ciphertext's folder.
+- **Releases can be checked**: the .deb is reproducible (rebuild it from the source and compare,
+  [docs/reproducible.md](docs/reproducible.md)), and GitHub releases carry signed `SHA256SUMS` and the build's
+  tool versions.
+- Built with stronger hardening: `_FORTIFY_SOURCE=3`, control-flow protection (CET), and zeroed local variables.
+- Behind the scenes: every parser of untrusted input is fuzzed in CI, three static analysers check the code, and
+  tests kill pnp at every step of saving to check that nothing is lost.
+- New documents: a threat model ([docs/threat-model.md](docs/threat-model.md)), NIST SP 800-90B measurements of
+  real hardware sources ([docs/entropy.md](docs/entropy.md)), and [SECURITY.md](SECURITY.md) for reporting a
+  vulnerability privately.
+- The interactive mode lets you choose how many words a generated passphrase has (5 to 20, 7 by default), as
+  `--gen-passphrase=WORDS` already did. The help and man page say what each length is worth: 10 words is about
+  128 bits, 20 about 256, as strong as the key the lock ends in.
+
 ## 0.1.0-alpha.5
 
 - **A progress line** for every file encrypted or decrypted (how far, how fast, how long is left), and for the

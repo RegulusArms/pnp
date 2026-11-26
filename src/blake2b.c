@@ -44,11 +44,11 @@ static uint64_t load64(const uint8_t *p)
 /* the compression function F, last = 1 for the final block */
 static void compress(struct pnp_blake2b *s, int last)
 {
-    uint64_t v[16], m[16];
-    for (int i = 0; i < 8; i++) {
-        v[i] = s->h[i];
-        v[i + 8] = IV[i];
-    }
+    /* v and m are set in full here (m's zero start only lets gcc -fanalyzer see that SIGMA's indexes, all 0-15,
+     * never read an unset word) */
+    uint64_t v[16], m[16] = {0};
+    memcpy(v, s->h, sizeof s->h);
+    memcpy(v + 8, IV, sizeof IV);
     v[12] ^= s->t[0];
     v[13] ^= s->t[1];
     if (last)

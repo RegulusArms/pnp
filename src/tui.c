@@ -11,9 +11,15 @@
  *
  * The code cylinder is looked for among the mounted drives in /media/$USER and /run/media/$USER (one labelled KEYS
  * is preferred, the name docs/code-cylinder.md uses), or any folder the user types. Keys are looked for at the top of
- * each of those and beside the ciphertext. */
+ * each of those and beside the ciphertext.
+ *
+ * A label is easy to copy: anyone can format a stick and call it KEYS, so keys written there would go to their
+ * drive. So pnp remembers each drive it has written keys to by its filesystem UUID (set when the drive was
+ * formatted), in $XDG_STATE_HOME/pnp/drives (~/.local/state/pnp/drives), and warns when a drive with a known name
+ * has a UUID it hasn't seen under that name. Writing keys to it anyway adds it (a second key drive, a backup). */
 #define _GNU_SOURCE
 #include "format.h"
+#include "keys.h"
 #include "pnp.h"
 #include "protect.h"
 
@@ -31,6 +37,7 @@
 #include <strings.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -265,57 +272,24 @@ static void rule(void)
 
 /* ---- the keyboard */
 
-enum {
-    K_NONE = 1000, K_UP, K_DOWN, K_LEFT, K_RIGHT, K_PGUP, K_PGDN, K_HOME, K_END, K_ENTER, K_ESC, K_BKSP, K_QUIT
-};
-
-/* the next key, or K_NONE when interrupted (a resize, or a signal: check pnp_stop) */
-static int read_key(void)
+/* one byte from the terminal for pnp_key_decode (keys.c) */
+static int stdin_byte(void *ctx, int wait_ms)
 {
+    (void)ctx;
     unsigned char c;
+    if (wait_ms >= 0) {
+        struct pollfd pf = {STDIN_FILENO, POLLIN, 0};
+        if (poll(&pf, 1, wait_ms) <= 0)
+            return PNP_KEY_EOF;
+    }
     ssize_t r = read(STDIN_FILENO, &c, 1);
     if (r < 0 && errno == EINTR)
-        return K_NONE;
-    if (r <= 0)
-        return K_QUIT; /* the terminal went away */
-    if (c == '\r' || c == '\n')
-        return K_ENTER;
-    if (c == 127 || c == 8)
-        return K_BKSP;
-    if (c == 3 || c == 4) /* Ctrl-C, Ctrl-D */
-        return K_QUIT;
-    if (c != 27)
-        return c;
-    /* Esc alone, or the start of an arrow key's sequence (Esc [ A, Esc O A, Esc [ 5 ~ ...): wait briefly for more */
-    struct pollfd pf = {STDIN_FILENO, POLLIN, 0};
-    unsigned char s[4];
-    if (poll(&pf, 1, 50) <= 0 || read(STDIN_FILENO, &s[0], 1) != 1)
-        return K_ESC;
-    if (s[0] != '[' && s[0] != 'O')
-        return K_ESC;
-    if (read(STDIN_FILENO, &s[1], 1) != 1)
-        return K_ESC;
-    switch (s[1]) {
-    case 'A': return K_UP;
-    case 'B': return K_DOWN;
-    case 'C': return K_RIGHT;
-    case 'D': return K_LEFT;
-    case 'H': return K_HOME;
-    case 'F': return K_END;
-    }
-    if (s[1] >= '0' && s[1] <= '9') {
-        int n = s[1] - '0';
-        while (read(STDIN_FILENO, &s[2], 1) == 1 && s[2] >= '0' && s[2] <= '9')
-            n = n * 10 + (s[2] - '0');
-        switch (n) {
-        case 1: case 7: return K_HOME;
-        case 4: case 8: return K_END;
-        case 5: return K_PGUP;
-        case 6: return K_PGDN;
-        }
-    }
-    return K_NONE;
+        return PNP_KEY_EINTR;
+    return r == 1 ? c : PNP_KEY_EOF;
 }
+
+/* the next key, or K_NONE when interrupted (a resize, or a signal: check pnp_stop) */
+static int read_key(void) { return pnp_key_decode(stdin_byte, NULL); }
 
 /* ---------------------------------------------------------------- headers, drives and keys */
 
@@ -326,7 +300,8 @@ struct hdr {
     uint8_t id[ID_LEN];
 };
 
-/* Reads a file's header without blocking (a FIFO or device is skipped) and says what it is. */
+/* Reads a file's header without blocking (a FIFO or device is skipped) and says what it is: the same parser
+ * (pnp_hdr_parse, format.c) decrypting uses, so the browser never offers a file decrypting would refuse as damaged. */
 static void peek(const char *path, struct hdr *h)
 {
     memset(h, 0, sizeof *h);
@@ -334,25 +309,17 @@ static void peek(const char *path, struct hdr *h)
     if (fd < 0)
         return;
     struct stat st;
-    uint8_t b[SHARE_HEADER_LEN];
+    struct pnp_hdr ph;
+    uint8_t b[PNP_HDR_MAX];
     ssize_t n = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) ? read(fd, b, sizeof b) : -1;
     close(fd);
-    if (n < HEADER_LEN)
+    if (n < 0 || pnp_hdr_parse(b, (size_t)n, (uint64_t)st.st_size, &ph) != PNP_HDR_OK)
         return;
-    if (!memcmp(b, MAGIC_CT, MAGIC_LEN) || !memcmp(b, MAGIC_CT_V1, MAGIC_LEN))
-        h->kind = H_CT;
-    else if (!memcmp(b, MAGIC_KEY, MAGIC_LEN) || !memcmp(b, MAGIC_KEY_V1, MAGIC_LEN))
-        h->kind = H_KEY;
-    else if (!memcmp(b, MAGIC_KEY_P, MAGIC_LEN))
-        h->kind = H_KEY, h->prot = 1;
-    else if ((!memcmp(b, MAGIC_SHARE, MAGIC_LEN) || !memcmp(b, MAGIC_SHARE_P, MAGIC_LEN)) && n == SHARE_HEADER_LEN &&
-             b[25] >= 2 && b[25] <= MAX_SHARES && b[24] >= 1 && b[24] <= b[25]) {
-        h->kind = H_SHARE;
-        h->prot = !memcmp(b, MAGIC_SHARE_P, MAGIC_LEN);
-        h->num = b[24];
-        h->count = b[25];
-    }
-    memcpy(h->id, b + MAGIC_LEN, ID_LEN);
+    h->kind = ph.kind == PNP_H_CT ? H_CT : ph.kind == PNP_H_KEY ? H_KEY : H_SHARE;
+    h->prot = ph.prot;
+    h->num = ph.num;
+    h->count = ph.count;
+    memcpy(h->id, ph.id, ID_LEN);
 }
 
 /* ---- where keys can go: [0] beside the file, then the drives found, then folders the user typed */
@@ -362,6 +329,8 @@ struct dest {
     char path[PATH_MAX];
     char name[256];
     int manual;
+    char uuid[64]; /* the filesystem's UUID, "" when it can't be told (not a block device, or a typed folder) */
+    int stranger;  /* a drive pnp wrote keys to before had this name, but not this UUID */
 };
 static struct dest dest[MAX_DEST];
 static int ndest, cyl; /* cyl: the code cylinder in use (an index into dest) */
@@ -378,6 +347,112 @@ static void add_dest(const char *path, const char *name, int manual)
     snprintf(dest[ndest].name, sizeof dest[ndest].name, "%s", name);
     dest[ndest].manual = manual;
     ndest++;
+}
+
+/* the UUID of the filesystem holding path: the /dev/disk/by-uuid link whose device is the one path is on */
+static void drive_uuid(const char *path, char *out, size_t len)
+{
+    out[0] = 0;
+#ifdef PNP_TEST
+    const char *fake = getenv("PNP_TEST_UUIDS"); /* test hook: lines "PATH UUID" instead of the real devices */
+    if (fake) {
+        FILE *f = fopen(fake, "re");
+        char line[PATH_MAX + 80];
+        size_t pl = strlen(path);
+        while (f && fgets(line, sizeof line, f))
+            if (strncmp(line, path, pl) == 0 && line[pl] == ' ') {
+                snprintf(out, len, "%.*s", (int)strcspn(line + pl + 1, "\n"), line + pl + 1);
+                break;
+            }
+        if (f)
+            fclose(f);
+        return;
+    }
+#endif
+    struct stat st;
+    if (stat(path, &st) < 0)
+        return;
+    DIR *d = opendir("/dev/disk/by-uuid");
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+        char p[PATH_MAX];
+        struct stat dev;
+        if (e->d_name[0] == '.' || snprintf(p, sizeof p, "/dev/disk/by-uuid/%s", e->d_name) >= (int)sizeof p)
+            continue;
+        size_t n = strlen(e->d_name);
+        if (n < len && stat(p, &dev) == 0 && S_ISBLK(dev.st_mode) && dev.st_rdev == st.st_dev) {
+            memcpy(out, e->d_name, n + 1); /* a UUID too long for out is never taken in part */
+            break;
+        }
+    }
+    if (d)
+        closedir(d);
+}
+
+/* where the drives keys were written to are remembered */
+static int drives_file(char *out, size_t len, int make_dir)
+{
+    const char *state = getenv("XDG_STATE_HOME"), *home = getenv("HOME");
+    char dir[PATH_MAX];
+    if (state && state[0] == '/')
+        snprintf(dir, sizeof dir, "%s/pnp", state);
+    else if (home && home[0] == '/')
+        snprintf(dir, sizeof dir, "%s/.local/state/pnp", home);
+    else
+        return -1;
+    if (make_dir) { /* each level, private to the user */
+        for (char *p = dir + 1; *p; p++)
+            if (*p == '/') {
+                *p = 0;
+                mkdir(dir, 0700);
+                *p = '/';
+            }
+        mkdir(dir, 0700);
+    }
+    return snprintf(out, len, "%s/drives", dir) < (int)len ? 0 : -1;
+}
+
+/* 1: label was seen with this uuid; -1: seen, but only with other UUIDs; 0: never seen */
+static int known_drive(const char *label, const char *uuid)
+{
+    char path[PATH_MAX], line[512];
+    int seen = 0;
+    if (drives_file(path, sizeof path, 0) < 0)
+        return 0;
+    FILE *f = fopen(path, "re");
+    while (f && fgets(line, sizeof line, f)) {
+        char *tab = strchr(line, '\t');
+        if (!tab)
+            continue;
+        *tab = 0;
+        tab[1 + strcspn(tab + 1, "\n")] = 0;
+        if (strcmp(tab + 1, label) == 0) {
+            if (strcmp(line, uuid) == 0) {
+                seen = 1;
+                break;
+            }
+            seen = -1;
+        }
+    }
+    if (f)
+        fclose(f);
+    return seen;
+}
+
+/* keys were written to drive i: remember its name and UUID (once) */
+static void remember_drive(int i)
+{
+    char path[PATH_MAX], line[512];
+    if (i < 1 || i >= ndest || i >= MAX_DEST) /* beside the file (0) isn't a drive */
+        return;
+    if (!dest[i].uuid[0] || known_drive(dest[i].name, dest[i].uuid) == 1 || drives_file(path, sizeof path, 1) < 0)
+        return;
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0600);
+    int n = snprintf(line, sizeof line, "%s\t%s\n", dest[i].uuid, dest[i].name);
+    if (fd >= 0 && n > 0 && n < (int)sizeof line && write(fd, line, (size_t)n) == n)
+        dest[i].stranger = 0;
+    if (fd >= 0)
+        close(fd);
 }
 
 static void scan_dests(void)
@@ -397,8 +472,9 @@ static void scan_dests(void)
     char bases[2][PATH_MAX];
     int nbases = 0;
 #ifdef PNP_TEST
-    if (getenv("PNP_TEST_MEDIA")) /* test hook: a folder standing in for /media/$USER */
-        snprintf(bases[nbases++], PATH_MAX, "%s", getenv("PNP_TEST_MEDIA"));
+    const char *media = getenv("PNP_TEST_MEDIA");
+    if (media) /* test hook: a folder standing in for /media/$USER */
+        snprintf(bases[nbases++], PATH_MAX, "%s", media);
     else
 #endif
         if (user) {
@@ -420,6 +496,10 @@ static void scan_dests(void)
         }
         closedir(d);
     }
+    for (int i = 1; i < ndest; i++) { /* the drives found: are they the ones keys went to before? */
+        drive_uuid(dest[i].path, dest[i].uuid, sizeof dest[i].uuid);
+        dest[i].stranger = dest[i].uuid[0] && known_drive(dest[i].name, dest[i].uuid) == -1;
+    }
     for (int i = 0; i < nmanual; i++)
         add_dest(manual[i].path, manual[i].name, 1);
     /* the cylinder: the one chosen before if it's still there, else a drive called KEYS, else the only drive */
@@ -439,7 +519,8 @@ static const char *dest_label(int i, char *buf, size_t len)
     if (i == 0)
         snprintf(buf, len, "beside the file (not on a code cylinder)");
     else
-        snprintf(buf, len, "%s%s", dest[i].path, i == cyl ? "  (code cylinder)" : "");
+        snprintf(buf, len, "%s%s%s", dest[i].stranger ? "NOT the drive of that name pnp wrote keys to before: " : "",
+                 dest[i].path, i == cyl ? "  (code cylinder)" : "");
     return buf;
 }
 
@@ -698,7 +779,10 @@ static void header(const char *title)
 static void cylinder_line(void)
 {
     cell(NULL, "Code cylinder: ", 15);
-    if (cyl)
+    if (cyl && dest[cyl].stranger)
+        cellf(c_red(), -1, "NOT the %s drive pnp wrote keys to before (another drive with its name?): %s",
+              dest[cyl].name, dest[cyl].path); /* the warning first: a long path would push it off the screen */
+    else if (cyl)
         cellp(c_green(), dest[cyl].path, -1);
     else if (ndest > 1)
         cell(c_yellow(), "none chosen: keys go beside the files (press c to choose a drive)", -1);
@@ -862,8 +946,9 @@ static void add_folder(void)
     char in[PATH_MAX] = "", path[PATH_MAX], *real;
     if (!input_line("Folder to keep keys in (your key drive, or a folder on it):", in, sizeof in))
         return;
-    if (in[0] == '~' && getenv("HOME"))
-        snprintf(path, sizeof path, "%s%s", getenv("HOME"), in + 1);
+    const char *home = getenv("HOME");
+    if (in[0] == '~' && home)
+        snprintf(path, sizeof path, "%s%s", home, in + 1);
     else
         snprintf(path, sizeof path, "%s", in);
     struct stat st;
@@ -973,10 +1058,15 @@ static struct {
     int key_dest; /* -1: the code cylinder */
     int shares;   /* 0: one key file */
     int share_dest[MAX_SHARES];
-    int lock, gen, mem, force;
-} ep = {-1, 0, {0}, 0, 1, 1, 0};
+    int lock, gen, words, mem, force;
+} ep = {-1, 0, {0}, 0, 1, 7, 1, 0};
 
-enum { R_KEYDEST, R_SHARES, R_SHAREDEST, R_LOCK, R_PASS, R_MEM, R_FORCE, R_GO, R_BACK };
+/* generated passphrases: the CLI's range (--gen-passphrase); each word is log2(7776) = 12.9 bits, so 10 words
+ * match a 128-bit key and 20 the 256-bit ChaCha20 key the lock ends in (more would add nothing) */
+#define WORDS_MIN 5
+#define WORDS_MAX 20
+
+enum { R_KEYDEST, R_SHARES, R_SHAREDEST, R_LOCK, R_PASS, R_WORDS, R_MEM, R_FORCE, R_GO, R_BACK };
 
 static int run_encrypt(int nsel);
 
@@ -997,7 +1087,7 @@ static void encrypt_screen(int nsel)
             conflicts += access(p, F_OK) == 0;
         }
         /* the rows: what can be changed, then the buttons */
-        int rt[8 + MAX_SHARES], ri[8 + MAX_SHARES], nr = 0;
+        int rt[9 + MAX_SHARES], ri[9 + MAX_SHARES], nr = 0;
         if (!ep.shares)
             rt[nr] = R_KEYDEST, ri[nr++] = 0;
         rt[nr] = R_SHARES, ri[nr++] = 0;
@@ -1006,6 +1096,8 @@ static void encrypt_screen(int nsel)
         rt[nr] = R_LOCK, ri[nr++] = 0;
         if (ep.lock) {
             rt[nr] = R_PASS, ri[nr++] = 0;
+            if (ep.gen)
+                rt[nr] = R_WORDS, ri[nr++] = 0;
             rt[nr] = R_MEM, ri[nr++] = 0;
         }
         if (conflicts || ep.force)
@@ -1053,7 +1145,12 @@ static void encrypt_screen(int nsel)
                 break;
             case R_PASS:
                 cell(NULL, "    Passphrase        ", 22);
-                cell(rev, ep.gen ? "< generate one for me (7 words) >" : "< I'll type my own >", -1);
+                cell(rev, ep.gen ? "< generate one for me >" : "< I'll type my own >", -1);
+                break;
+            case R_WORDS:
+                cell(NULL, "    Words             ", 22);
+                cellf(rev, -1, "< %d: about %d bits%s >", ep.words, ep.words * 1292 / 100,
+                      ep.words == WORDS_MAX ? ", as strong as the key it locks" : "");
                 break;
             case R_MEM:
                 cell(NULL, "    Memory per guess  ", 22);
@@ -1163,6 +1260,13 @@ static void encrypt_screen(int nsel)
             }
             case R_LOCK: ep.lock = !ep.lock; break;
             case R_PASS: ep.gen = !ep.gen; break;
+            case R_WORDS:
+                ep.words += dir;
+                if (ep.words < WORDS_MIN)
+                    ep.words = WORDS_MAX;
+                if (ep.words > WORDS_MAX)
+                    ep.words = WORDS_MIN;
+                break;
             case R_MEM: ep.mem = (ep.mem + dir + NMEMS) % NMEMS; break;
             case R_FORCE: ep.force = !ep.force; break;
             }
@@ -1173,31 +1277,31 @@ static void encrypt_screen(int nsel)
 /* -1 if the terminal went away or a signal came */
 static int run_encrypt(int nsel)
 {
-    char passbuf[PNP_PASS_MAX], err[512];
+    char *passbuf = pnp_secure_buf(0), err[512]; /* locked and wiped (main.c) */
     int ok = 0, failed = 0, ret = 0;
     term_leave();
     printf("pnp: encrypting\n\n");
     if (ep.lock) {
         if (ep.gen) {
-            if (pnp_make_passphrase(7, passbuf, sizeof passbuf, 0) < 0)
+            if (pnp_make_passphrase(ep.words, passbuf, PNP_PASS_MAX, 0) < 0)
                 goto done;
-            printf("\nYour passphrase (7 words from the EFF list, about 90 bits):\n\n    %s\n\n"
+            printf("\nYour passphrase (%d words from the EFF list, about %d bits):\n\n    %s\n\n"
                    "Write it down now and keep it apart from the key: without it the files can't be decrypted.\n",
-                   passbuf);
+                   ep.words, ep.words * 1292 / 100, passbuf);
             if (wait_enter("Press Enter once it's written down.") < 0) {
                 ret = -1;
                 goto done;
             }
             printf("\033[2J\033[H"); /* off the screen once written down */
         } else {
-            long n = pnp_read_passphrase(NULL, 1, passbuf, sizeof passbuf, err, sizeof err);
+            long n = pnp_read_passphrase(NULL, 1, passbuf, PNP_PASS_MAX, err, sizeof err);
             if (n < 0) {
                 printf("pnp: %s\n", err);
                 goto done;
             }
         }
         pnp_preset_passphrase(passbuf, strlen(passbuf));
-        explicit_bzero(passbuf, sizeof passbuf);
+        explicit_bzero(passbuf, PNP_PASS_MAX);
     }
     struct protect_opts po = {ep.lock, MEMS[ep.mem], NULL};
     for (int i = 0; i < nents && !pnp_stop; i++) {
@@ -1216,10 +1320,16 @@ static int run_encrypt(int nsel)
         pnp_clean(shown);
         printf("--- %s\n", shown);
         fflush(stdout);
-        if (pnp_encrypt(ents[i].name, NULL, outs, nouts, ep.shares, ep.force, 0, &po) == 0)
+        if (pnp_encrypt(ents[i].name, NULL, outs, nouts, ep.shares, ep.force, 0, &po) == 0) {
             ok++;
-        else
+            /* the drives keys went to are remembered, so a different drive with the same name is noticed */
+            for (int s = 0; s < ep.shares; s++)
+                remember_drive(ep.share_dest[s]);
+            if (!ep.shares)
+                remember_drive(ep.key_dest);
+        } else {
             failed++;
+        }
     }
     printf("\n%d encrypted%s", ok, failed ? "" : ".");
     if (failed)
@@ -1228,7 +1338,7 @@ static int run_encrypt(int nsel)
     set_status(failed ? c_red() : c_green(), "%d file%s encrypted%s", ok, ok == 1 ? "" : "s",
                failed ? ", some failed" : "");
 done:
-    explicit_bzero(passbuf, sizeof passbuf);
+    explicit_bzero(passbuf, PNP_PASS_MAX);
     pnp_clear_passphrase();
     if (!ret && !pnp_stop && wait_enter("\nPress Enter to go back to the files.") < 0)
         ret = -1;
@@ -1343,18 +1453,18 @@ static void decrypt_screen(int nsel)
 
 static int run_decrypt(int nsel, int force, int any_prot)
 {
-    char passbuf[PNP_PASS_MAX], err[512];
+    char *passbuf = pnp_secure_buf(0), err[512]; /* locked and wiped (main.c) */
     int ok = 0, failed = 0, ret = 0;
     term_leave();
     printf("pnp: decrypting\n\n");
     if (any_prot) {
-        long n = pnp_read_passphrase(NULL, 0, passbuf, sizeof passbuf, err, sizeof err);
+        long n = pnp_read_passphrase(NULL, 0, passbuf, PNP_PASS_MAX, err, sizeof err);
         if (n < 0) {
             printf("pnp: %s\n", err);
             goto done;
         }
         pnp_preset_passphrase(passbuf, (size_t)n);
-        explicit_bzero(passbuf, sizeof passbuf);
+        explicit_bzero(passbuf, PNP_PASS_MAX);
     }
     for (int i = 0; i < nents && !pnp_stop; i++) {
         if (!is_selected(&ents[i], nsel, i))
@@ -1370,7 +1480,8 @@ static int run_decrypt(int nsel, int force, int any_prot)
         pnp_clean(shown);
         printf("--- %s\n", shown);
         fflush(stdout);
-        if (pnp_decrypt(ents[i].name, kp, match_paths(&m, kp), out, force, NULL) == 0)
+        int nk = match_paths(&m, kp);
+        if (pnp_decrypt(ents[i].name, kp, nk, out, force, NULL, 0) == 0)
             ok++;
         else
             failed++;
@@ -1382,7 +1493,7 @@ static int run_decrypt(int nsel, int force, int any_prot)
     set_status(failed ? c_red() : c_green(), "%d file%s decrypted%s", ok, ok == 1 ? "" : "s",
                failed ? ", some failed" : "");
 done:
-    explicit_bzero(passbuf, sizeof passbuf);
+    explicit_bzero(passbuf, PNP_PASS_MAX);
     pnp_clear_passphrase();
     if (!pnp_stop && wait_enter("\nPress Enter to go back to the files.") < 0)
         ret = -1;
@@ -1459,7 +1570,8 @@ int pnp_tui(void)
     sa.sa_handler = on_winch; /* no SA_RESTART: the read returns and the screen is redrawn */
     sigemptyset(&sa.sa_mask);
     sigaction(SIGWINCH, &sa, NULL);
-    color = getenv("NO_COLOR") == NULL || !getenv("NO_COLOR")[0];
+    const char *no_color = getenv("NO_COLOR");
+    color = no_color == NULL || !no_color[0];
     refresh_all();
     term_enter();
     for (int quit = 0; !quit && !pnp_stop;) {
@@ -1493,8 +1605,9 @@ int pnp_tui(void)
     }
     term_leave();
 #ifdef PNP_TEST
-    if (getenv("PNP_TEST_FDS")) { /* test hook: what this process still has open, to catch leaked descriptors */
-        FILE *f = fopen(getenv("PNP_TEST_FDS"), "we");
+    const char *fds = getenv("PNP_TEST_FDS");
+    if (fds) { /* test hook: what this process still has open, to catch leaked descriptors */
+        FILE *f = fopen(fds, "we");
         DIR *d = opendir("/proc/self/fd");
         struct dirent *e;
         while (f && d && (e = readdir(d))) {

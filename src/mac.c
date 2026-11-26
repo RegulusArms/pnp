@@ -26,11 +26,18 @@
 
 #define P (((pnp_u128)1 << 127) - 1)
 
+/* Constant time: the arithmetic below runs on the secret key k and on the plaintext, so it has no branches and no
+ * secret-dependent memory access, only shifts, masks, adds and 64x64-bit multiplies (fixed-time on x86-64 and
+ * arm64). Comparisons are avoided too, because a compiler may turn "x >= P ? ..." into a jump: each choice is made
+ * with a mask built from a borrow or carry bit instead. docs/constant-time.md has the review. */
+
 /* x mod p for any 128-bit x: 2^127 = 1 (mod p), so fold the top bit down, then subtract p once if needed */
 static pnp_u128 canon(pnp_u128 x)
 {
     x = (x & P) + (x >> 127); /* at most 2^127 = p + 1 */
-    return x >= P ? x - P : x;
+    pnp_u128 d = x - P;       /* x < p: wraps, and bit 127 is set; x >= p: d is 0 or 1 */
+    pnp_u128 keep = -(d >> 127);
+    return (x & keep) | (d & ~keep);
 }
 
 static pnp_u128 add(pnp_u128 a, pnp_u128 b) { return canon(a + b); } /* a, b < p: no overflow */
@@ -42,8 +49,9 @@ static pnp_u128 mul(pnp_u128 a, pnp_u128 b)
     uint64_t a0 = (uint64_t)a, a1 = (uint64_t)(a >> 64), b0 = (uint64_t)b, b1 = (uint64_t)(b >> 64);
     pnp_u128 p00 = (pnp_u128)a0 * b0, p11 = (pnp_u128)a1 * b1;
     pnp_u128 mid = (pnp_u128)a0 * b1 + (pnp_u128)a1 * b0; /* a1, b1 < 2^63: each < 2^127, no overflow */
-    pnp_u128 lo = p00 + (mid << 64);
-    pnp_u128 hi = p11 + (mid >> 64) + (lo < p00); /* < 2^127 */
+    pnp_u128 m64 = mid << 64, lo = p00 + m64;
+    pnp_u128 carry = ((p00 & m64) | ((p00 | m64) & ~lo)) >> 127; /* the add's carry out, without comparing */
+    pnp_u128 hi = p11 + (mid >> 64) + carry;                     /* < 2^127 */
     return add(canon(lo), canon(hi << 1));
 }
 

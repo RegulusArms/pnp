@@ -17,6 +17,7 @@ check() { if eval "$1"; then echo "PASS $2"; else echo "FAIL $2"; fails=$((fails
 T="$(mktemp -d)"
 trap 'kill $(jobs -p) 2>/dev/null; chmod -R u+rwX "$T"; rm -rf "$T"' EXIT
 export PNP_TEST_NO_RDSEED=1
+export XDG_STATE_HOME="$T/state" # the interactive mode remembers key drives here, not in your home
 export PNP_TEST_VM= # a physical machine, even when the tests run in one (CI runners are virtual machines)
 head -c $((8 << 20)) /dev/urandom >"$T/rng"         # the fake hardware source: 8 MiB of random bytes
 export PNP_TEST_HWRNG="$T/rng"
@@ -354,6 +355,15 @@ rm "$T/tw/a.txt" && mv "$T/media/OTHER" "$T/unplugged"
 tui 'j\rj\rq' # one drive unplugged: [Back]
 check 'grep -q "only 1 of 2 shares found" "$T/tui.out" && [[ ! -e "$T/tw/a.txt" ]]' \
     "interactive: with a drive unplugged it says which share is missing, and decrypts nothing"
+rm -f "$T/tw/a.txt.pnp" && cp "$T/a.orig" "$T/tw/a.txt"
+# lock on, generated passphrase, Words 7 -> 12, memory 1024 -> 256 MiB, [Encrypt]; Enter once it's written down
+tui 'j\rjj\rjjllllljhj\r\r\nq'
+grep -a -A2 "Your passphrase" "$T/tui.out" | tail -1 | tr -d '\r' | sed 's/^ *//' >"$T/tuipass"
+check 'grep -q "Your passphrase (12 words from the EFF list, about 155 bits)" "$T/tui.out" &&
+       [[ $(wc -w <"$T/tuipass") == 12 ]] && rm "$T/tw/a.txt" &&
+       "$PNP" -q -d -k "$T/media/KEYS/a.txt.pnp.key" --passphrase-file "$T/tuipass" "$T/tw/a.txt.pnp" &&
+       cmp -s "$T/tw/a.txt" "$T/a.orig"' \
+    "interactive: a generated passphrase can be made longer (12 words), and it decrypts the locked key"
 check '"$PNP" </dev/null >/dev/null 2>&1; [[ $? == 2 ]] &&
        (cd "$T/tw" && printf q | TERM=dumb script -qec "$PNP" "$T/tui.out" >/dev/null 2>&1; grep -q "usage: pnp" "$T/tui.out" && ! grep -q "1049h" "$T/tui.out")' \
     "pnp alone prints its usage when not in a terminal, or with TERM=dumb"
@@ -517,6 +527,210 @@ check 'tr "\r" "\n" <"$T/pty.out" | grep -a "^.\[Kpnp: .*%" | sed "s/^.\[K//" >"
        grep -q "encrypting.*\[.*>" "$T/lines" && grep -q "Argon2id  \[.*>" "$T/lines" &&
        ! awk "length(\$0) > 49" "$T/lines" | grep -q .' \
     "on a narrow terminal (50 columns), the progress lines still have a bar and never wrap"
+
+# --- code cylinder identity: a different drive with a known name is noticed (PNP_TEST_UUIDS fakes the UUIDs)
+rm -rf "$T/tw" "$T/media" "$T/state" && mkdir -p "$T/tw" "$T/media/KEYS"
+echo "for the key drive" >"$T/tw/b.txt"
+export PNP_TEST_UUIDS="$T/uuids"
+printf '%s uuid-AAAA\n' "$T/media/KEYS" >"$T/uuids"
+tui 'j\rjjj\r\nq' # encrypt b.txt with its key on KEYS
+check '[[ -e "$T/media/KEYS/b.txt.pnp.key" ]] && grep -q "^uuid-AAAA	KEYS$" "$T/state/pnp/drives" &&
+       [[ $(stat -c %a "$T/state/pnp/drives") == 600 && $(stat -c %a "$T/state/pnp") == 700 ]]' \
+    "interactive: the drive keys were written to is remembered by its UUID (private to the user)"
+printf '%s uuid-BBBB\n' "$T/media/KEYS" >"$T/uuids"
+tui 'q'
+check 'grep -q "NOT the KEYS drive pnp wrote keys to before" "$T/tui.out"' \
+    "interactive: another drive called KEYS (a different UUID) is pointed out"
+printf '%s uuid-AAAA\n' "$T/media/KEYS" >"$T/uuids"
+tui 'q'
+check '! grep -q "NOT the KEYS drive" "$T/tui.out" && grep -q "Code cylinder: .*KEYS" "$T/tui.out"' \
+    "interactive: the remembered drive brings no warning"
+printf '%s uuid-BBBB\n' "$T/media/KEYS" >"$T/uuids"
+rm "$T/tw/b.txt.pnp" "$T/media/KEYS/b.txt.pnp.key"
+tui 'j\rjjj\r\nq' # keys written to the new drive on purpose: it's a second key drive now
+tui 'q'
+check '! grep -q "NOT the KEYS drive" "$T/tui.out" && [[ $(grep -c KEYS "$T/state/pnp/drives") == 2 ]]' \
+    "interactive: writing keys to the new drive anyway remembers it too (a backup key drive)"
+unset PNP_TEST_UUIDS
+
+# --- --verify: every check decrypting does, nothing written
+fresh
+head -c 100000 /dev/urandom >"$T/w/f" && cp "$T/w/f" "$T/w/orig"
+"$PNP" -q "$T/w/f" && rm "$T/w/f"
+check '"$PNP" --verify "$T/w/f.pnp" 2>"$T/err" && grep -q "is whole" "$T/err" && [[ ! -e "$T/w/f" ]] &&
+       [[ $(ls -A "$T/w" | wc -l) == 3 ]]' "--verify passes a whole ciphertext and writes nothing"
+check '"$PNP" -q --verify "$T/w/f.pnp" 2>"$T/err" && [[ ! -s "$T/err" ]]' "--verify -q answers with its exit status only"
+cp "$T/w/f.pnp" "$T/w/bad.pnp" && cp "$T/w/f.pnp.key" "$T/w/bad.pnp.key"
+printf '\x01' | dd of="$T/w/bad.pnp" bs=1 seek=5000 conv=notrunc 2>/dev/null
+check '! "$PNP" --verify "$T/w/bad.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" && [[ ! -e "$T/w/bad" ]]' \
+    "--verify fails (exit 1) when one byte of the ciphertext changed"
+echo other >"$T/w/g" && "$PNP" -q "$T/w/g"
+check '! "$PNP" -q --verify -k "$T/w/g.pnp.key" "$T/w/f.pnp" 2>"$T/err" && grep -q "isn.t the key" "$T/err"' \
+    "--verify fails with another encryption's key"
+"$PNP" -q --shares 3 -o "$T/w/s.pnp" "$T/w/orig"
+check '"$PNP" -q --verify "$T/w/s.pnp" && ! "$PNP" -q --verify -k "$T/w/s.pnp.key.1" -k "$T/w/s.pnp.key.2" "$T/w/s.pnp" 2>/dev/null' \
+    "--verify checks shares, and refuses an incomplete set"
+check '! "$PNP" --verify -o "$T/w/x" "$T/w/f.pnp" 2>/dev/null && ! "$PNP" --verify -f "$T/w/f.pnp" 2>/dev/null' \
+    "--verify refuses -o and -f (it writes nothing)"
+
+# --- leftovers of an interrupted run are pointed out
+fresh
+echo one >"$T/w/f"
+touch "$T/w/.f.pnp.Ab3dE9.pnp-part" "$T/w/.f.pnp.key.Zz9yX1.pnp-old" "$T/w/.notours.pnp-part"
+check '"$PNP" "$T/w/f" 2>"$T/err" && grep -q "left by a pnp run that was interrupted" "$T/err" &&
+       grep -q "\.f\.pnp\.Ab3dE9\.pnp-part: an unfinished f.pnp" "$T/err" &&
+       grep -q "\.f\.pnp\.key\.Zz9yX1\.pnp-old: the old f.pnp.key.*mv -f" "$T/err" && ! grep -q notours "$T/err" &&
+       [[ -e "$T/w/.f.pnp.Ab3dE9.pnp-part" && -e "$T/w/.f.pnp.key.Zz9yX1.pnp-old" ]]' \
+    "leftover part and moved-aside files are pointed out with what to do, never touched (other names ignored)"
+check '"$PNP" -q -f "$T/w/f" 2>"$T/err" && [[ ! -s "$T/err" ]]' "-q leaves the leftovers note out"
+
+# --- --strict: no running with secrets that can't be locked in memory
+fresh
+echo one >"$T/w/f"
+check '"$PNP" -q --strict "$T/w/f" && [[ -e "$T/w/f.pnp" ]]' "--strict works when the buffers can be locked"
+if [[ $(id -u) != 0 && -z "${PNP_SANITIZE:-}" ]]; then
+    rm "$T/w/f.pnp" "$T/w/f.pnp.key"
+    check '(ulimit -l 0; ! "$PNP" --strict "$T/w/f" 2>"$T/err") && grep -q "strict: pnp couldn.t lock" "$T/err" &&
+           [[ ! -e "$T/w/f.pnp" && ! -e "$T/w/f.pnp.key" ]] && no_parts' \
+        "--strict refuses (and writes nothing) when the buffers can't be locked (ulimit -l 0)"
+    check '(ulimit -l 4096; ! "$PNP" --strict --protect --kdf-memory 64 --passphrase-file "$T/pass" "$T/w/f" 2>"$T/err") &&
+           grep -q "strict: the passphrase hashes need 80 MiB locked" "$T/err" && [[ ! -e "$T/w/f.pnp" ]]' \
+        "--strict --protect refuses when the hashes' memory can't be locked"
+    check '"$PNP" --strict --gen-passphrase >/dev/null 2>&1 && (ulimit -l 0; ! "$PNP" --strict --gen-passphrase >/dev/null 2>&1)' \
+        "--strict applies to --gen-passphrase too"
+else
+    echo "SKIP --strict refusal checks (root ignores ulimit -l; AddressSanitizer makes mlock a no-op)"
+fi
+
+# --- the sandbox, once the files are open (PNP_TEST_PROBE tries things from inside it)
+fresh
+echo one >"$T/w/f"
+echo secret >"$T/outside"
+PNP_TEST_PROBE="$T/outside" "$PNP" -v "$T/w/f" 2>"$T/err"
+if [[ -n "${PNP_SANITIZE:-}" ]]; then
+    echo "SKIP seccomp checks (AddressSanitizer builds leave the sandbox out)"
+else
+    check 'grep -q "probe create: Operation not permitted" "$T/err" && grep -q "probe socket: Operation not permitted" "$T/err" &&
+           [[ ! -e "$T/outside.made" ]] && "$PNP" -q -d -f "$T/w/f.pnp"' \
+        "sandbox: once the files are open, pnp can't create files or open a socket (and still saves its outputs)"
+    (PNP_TEST_PROBE="$T/w/f" PNP_TEST_PROBE_EXEC=1 "$PNP" -q -f "$T/w/f"; exit $?) >/dev/null 2>&1
+    check '[[ $? == 159 ]]' "sandbox: running another program kills pnp (SIGSYS, exit 159)"
+    rm -f "$T"/w/.*.pnp-part
+fi
+if [[ -n "${PNP_SANITIZE:-}" ]]; then
+    echo "SKIP Landlock checks (AddressSanitizer builds leave the sandbox out)"
+elif grep -q "Landlock on" "$T/err"; then
+    PNP_TEST_PROBE="$T/w/probe" "$PNP" -q -f "$T/w/f" 2>"$T/err2"
+    check 'grep -q "probe read $T/outside: Permission denied" "$T/err" && grep -q "probe folder: Permission denied" "$T/err" &&
+           grep -q "probe folder: allowed" "$T/err2"' \
+        "sandbox: Landlock stops reading files and folders outside the output folders, and still lets pnp fsync those"
+    PNP_TEST_PROBE="$T/outside" "$PNP" -q --verify "$T/w/f.pnp" 2>"$T/err"
+    check 'grep -q "probe read $T/outside: Permission denied" "$T/err" && grep -q "probe folder: Permission denied" "$T/err"' \
+        "sandbox: --verify, which writes nothing, gets no folder at all"
+else
+    echo "SKIP Landlock checks (not available in this kernel or container)"
+fi
+
+# --- crash safety: pnp killed (SIGKILL, no cleanup) at every step of writing and saving, PNP_TEST_CRASH_AT=1, 2...
+# After each crash nothing may be lost: the plaintext is untouched, a ciphertext under its real name always has its
+# whole key, and the state is either finished or can be undone as the leftovers note says (docs/recovery.md).
+# Keys go to a second filesystem when there is one (/dev/shm), as with a key drive. A kill tests every state the
+# file names can be left in; that each state survives a power cut too rests on the fsyncs (fileio.c).
+O="$T/keys"
+if shm=$(mktemp -d /dev/shm/pnp-test.XXXXXX 2>/dev/null); then O="$shm"; fi
+trap 'kill $(jobs -p) 2>/dev/null; chmod -R u+rwX "$T"; rm -rf "$T" ${shm:+"$shm"}' EXIT
+# undo: what the leftovers note says for an interrupted -f run: every .pnp-old back over its name, parts deleted
+undo() {
+    local d f n
+    for d in "$T/w" "$O"; do
+        for f in "$d"/.*.pnp-old; do
+            [[ -e "$f" ]] || continue
+            n=$(basename "$f"); n=${n#.}; n=${n%.??????.pnp-old}
+            mv -f "$f" "$d/$n"
+        done
+        rm -f "$d"/.*.pnp-part
+    done
+}
+keyargs() { local a=() k; for k in "$O"/f.pnp.key*; do [[ -e "$k" ]] && a+=(-k "$k"); done; echo "${a[@]}"; }
+crash_walk() { # $1: name, $2: setup, $3: the pnp command, $4: what must hold after a crash
+    local n=0 st bad=0 steps=0
+    while ((n < 300)); do
+        n=$((n + 1))
+        eval "$2"
+        (export PNP_TEST_CRASH_AT=$n; eval "$3") >/dev/null 2>&1 # a subshell, so bash doesn't report the kill
+        st=$?
+        if [[ $st == 0 ]]; then break; fi
+        steps=$n
+        if [[ $st != 137 ]] || ! eval "$4"; then
+            bad=$((bad + 1))
+            echo "  crash at step $n: exit $st, check failed"
+        fi
+    done
+    check '((bad == 0 && steps >= 5 && n < 300))' "crash safety, $1: killed at each of $steps steps, nothing lost"
+}
+head -c 150000 /dev/urandom >"$T/new" && head -c 90000 /dev/urandom >"$T/old"
+clean_all() { rm -rf "$T/w" "$O"/* "$O"/.[!.]* 2>/dev/null; mkdir -p "$T/w" "$O"; }
+# A: encrypting, key on the other drive
+crash_walk "encrypting with --key-out" \
+    'clean_all; cp "$T/new" "$T/w/f"' \
+    '"$PNP" -q --key-out "$O" "$T/w/f"' \
+    'cmp -s "$T/w/f" "$T/new" && { [[ ! -e "$T/w/f.pnp" ]] || "$PNP" -q --verify -k "$O/f.pnp.key" "$T/w/f.pnp"; }'
+# a crash's leftovers are reported by the next run, in both folders
+clean_all; cp "$T/new" "$T/w/f"
+(PNP_TEST_CRASH_AT=8 "$PNP" -q -f --key-out "$O" "$T/w/f"; exit $?) >/dev/null 2>&1
+check '[[ -n $(find "$T/w" "$O" -name "*.pnp-part" -path "$T/w/*") && -n $(find "$O" -name "*.pnp-part") ]] && "$PNP" -f --key-out "$O" "$T/w/f" 2>"$T/err" &&
+       [[ $(grep -c "left by a pnp run that was interrupted" "$T/err") == 2 ]]' \
+    "crash safety: after a crash, the next run points out the leftovers on both drives"
+
+# B: -f replacing an old ciphertext and key
+setup_old='clean_all; cp "$T/old" "$T/w/f"; "$PNP" -q --key-out "$O" "$T/w/f"; cp "$T/new" "$T/w/f"'
+holds_f='cmp -s "$T/w/f" "$T/new" &&
+     if [[ -e "$T/w/f.pnp" ]] && "$PNP" -q --verify $(keyargs) "$T/w/f.pnp" 2>/dev/null; then
+         "$PNP" -q -d -f -o "$T/back" $(keyargs) "$T/w/f.pnp" && { cmp -s "$T/back" "$T/new" || cmp -s "$T/back" "$T/old"; }
+     else
+         undo && "$PNP" -q -d -f -o "$T/back" $(keyargs) "$T/w/f.pnp" && cmp -s "$T/back" "$T/old"
+     fi'
+crash_walk "-f replacing a ciphertext and its key" "$setup_old" '"$PNP" -q -f --key-out "$O" "$T/w/f"' "$holds_f"
+# C: -f replacing, as 3 shares on the other drive
+crash_walk "-f replacing, as 3 shares" \
+    'clean_all; cp "$T/old" "$T/w/f"; "$PNP" -q --shares 3 --key-out "$O" "$T/w/f"; cp "$T/new" "$T/w/f"' \
+    '"$PNP" -q -f --shares 3 --key-out "$O" "$T/w/f"' "$holds_f"
+# D: decrypting over an existing file with -f
+crash_walk "decrypting with -f" \
+    'clean_all; cp "$T/new" "$T/w/f"; "$PNP" -q --key-out "$O" "$T/w/f"; cp "$T/old" "$T/w/f"' \
+    '"$PNP" -q -d -f -k "$O/f.pnp.key" "$T/w/f.pnp"' \
+    '{ cmp -s "$T/w/f" "$T/old" || cmp -s "$T/w/f" "$T/new"; } && "$PNP" -q --verify -k "$O/f.pnp.key" "$T/w/f.pnp"'
+
+# --- the fuzz harnesses (tests/fuzz/), run once on their seeds: they build and pass here (make fuzz-run fuzzes)
+tests/fuzz/seeds.sh "$PNP" "$T/seeds" >/dev/null
+for f in header keys passfile verify; do
+    check '"$B/fuzz/replay_$f" "$T/seeds/$f"/* >/dev/null' "fuzz harness $f passes on its seeds"
+done
+
+# --- constant time (docs/constant-time.md): the MAC's arithmetic, which runs on the secret key and the plaintext,
+# compiles to no conditional jumps at any optimisation level, in whichever of its functions the compiler keeps
+# (load's loop runs over a public length, so it's left out)
+for opt in -O1 -O2 -O3 -Os; do
+    ${CC:-cc} -std=c11 $opt -Isrc -c src/mac.c -o "$T/mac.o" && objdump -d --no-show-raw-insn "$T/mac.o" >"$T/mac.s"
+    check 'awk "/^[0-9a-f]+ <(block|canon|add|mul)>:/{f=1;n++;next} /^[0-9a-f]+ </{f=0} f && /\tj[a-z]+ /{j++}
+               END{exit !(n >= 1 && j == 0)}" "$T/mac.s"' \
+        "constant time: the MAC's arithmetic has no conditional jumps ($opt)"
+done
+
+# --- hardening (Makefile): what the compiler offers is in the binary
+objdump -T "$B/pnp" >"$T/syms"; readelf -d "$B/pnp" >"$T/dyn"; readelf -lW "$B/pnp" >"$T/segs"; readelf -n "$B/pnp" >"$T/notes"
+check 'grep -q "__[a-z_]*_chk" "$T/syms" && grep -q "BIND_NOW" "$T/dyn" && grep -q "GNU_RELRO" "$T/segs" &&
+       ! grep "GNU_STACK" "$T/segs" | grep -q "RWE"' \
+    "the binary has _FORTIFY_SOURCE checks, full RELRO and a non-executable stack"
+# CET marks a binary only if every object linked in has it, the C library's start-up files included: so it's
+# required where a trivial program built with -fcf-protection gets it (Ubuntu), not where it can't (Debian's)
+printf 'int main(void) { return 0; }\n' >"$T/cet.c"
+if [[ $(uname -m) == x86_64 && -z "${PNP_SANITIZE:-}" ]] && ${CC:-cc} -fcf-protection "$T/cet.c" -o "$T/cet" 2>/dev/null &&
+    readelf -n "$T/cet" >"$T/cet.notes" && grep -q "IBT, SHSTK" "$T/cet.notes"; then
+    check 'grep -q "IBT, SHSTK" "$T/notes"' "the binary is marked for CET (indirect-branch tracking, shadow stack)"
+else
+    echo "SKIP CET check (this toolchain's start-up files aren't built for CET)"
+fi
 
 # --- the shipped binary has no test hooks
 check 'grep -qa PNP_TEST_HWRNG "$B/pnp-test" && ! grep -qa PNP_TEST_ "$B/pnp"' \

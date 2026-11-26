@@ -13,6 +13,10 @@
 typedef void (*pnp_kdf_progress_fn)(const char *phase, uint64_t done, uint64_t total);
 void pnp_kdf_set_progress(pnp_kdf_progress_fn fn);
 
+/* The hashes' memory is locked in RAM when the limit (ulimit -l) allows. With strict set (--strict), memory that
+ * can't be locked is a failure (the hash returns -1) instead of being used unlocked. */
+void pnp_kdf_set_strict(int strict);
+
 /* Balloon hashing with BLAKE2b-512 and delta = 3: s_cost blocks of 64 bytes (>= 2), t_cost rounds (>= 1). Writes
  * 64 bytes. Returns 0, or -1 if the memory can't be had or the costs are out of range. */
 int pnp_balloon(uint8_t out[PNP_BALLOON_BLOCK], const uint8_t *pwd, size_t pwdlen, const uint8_t *salt,

@@ -27,20 +27,33 @@ static void report(const char *phase, uint64_t done, uint64_t total)
         progress_fn(phase, done, total);
 }
 
-/* the big buffers: mmap'd (so they go back to the system at once), kept out of core dumps, wiped when done */
+static int strict;
+void pnp_kdf_set_strict(int on) { strict = on; }
+
+/* The big buffers: mmap'd (so they go back to the system at once), kept out of core dumps, wiped in a child if
+ * anything ever forked, wiped when done. Locked in RAM when the limit allows: what they hold is derived from the
+ * passphrase, and on swap it would outlive the run. The default limit (8 MiB) is far below the default 1 GiB, so
+ * usually they aren't; --strict (pnp_kdf_set_strict) makes that a failure instead. */
 static void *big_alloc(size_t n)
 {
     void *p = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (p == MAP_FAILED)
         return NULL;
     madvise(p, n, MADV_DONTDUMP);
+#ifdef MADV_WIPEONFORK
+    madvise(p, n, MADV_WIPEONFORK);
+#endif
+    if (mlock(p, n) < 0 && strict) {
+        munmap(p, n);
+        return NULL;
+    }
     return p;
 }
 
 static void big_free(void *p, size_t n)
 {
     explicit_bzero(p, n);
-    munmap(p, n);
+    munmap(p, n); /* unlocks it too */
 }
 
 static void le32(uint8_t *b, uint32_t v)

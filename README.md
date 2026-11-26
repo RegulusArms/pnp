@@ -8,7 +8,7 @@
 [![C11, libc only](https://img.shields.io/badge/C11-libc%20only-A8B9CC?logo=c&logoColor=white)](#building-from-source)
 [![License: MIT](https://img.shields.io/github/license/RegulusArms/pnp)](LICENSE)
 
-**Version 0.1.0-alpha.5**: early alpha. See [Installing](#installing).
+**Version 0.1.0-alpha.6**: early alpha. See [Installing](#installing).
 
 A command-line file encryption tool for Debian, Ubuntu, Linux Mint and other Debian-based systems, built to stay
 secure even if P = NP.
@@ -80,6 +80,12 @@ Then log out and back in. `pnp --sources` shows which hardware sources pnp can u
 
 **Updating:** `sudo apt update && sudo apt upgrade` updates pnp with the rest of your system.
 
+**Downloading the .deb directly** from a [GitHub release](https://github.com/RegulusArms/pnp/releases) instead:
+check it with the signed `SHA256SUMS` beside it (`gpg --verify SHA256SUMS.asc SHA256SUMS && sha256sum -c
+--ignore-missing SHA256SUMS`, with `pnp.asc` imported), then `sudo apt install ./pnp_*.deb`. Every package can
+also be rebuilt bit for bit from its source: [docs/reproducible.md](docs/reproducible.md) shows how to check one
+against your own build.
+
 **Removing:** `sudo apt remove pnp` removes the program. `sudo apt purge pnp` also removes the `pnp` group. To
 stop using the repository too:
 
@@ -131,7 +137,7 @@ Type `pnp` on its own in a terminal and it opens a file browser for the folder y
    / __ \/ | / / __ \
   / /_/ /  |/ / /_/ /
  / ____/ /|  / ____/
-/_/   /_/ |_/_/          p = np. now what?   pnp 0.1.0-alpha.5
+/_/   /_/ |_/_/          p = np. now what?   pnp 0.1.0-alpha.6
 Folder:        /home/you/documents
 Code cylinder: /media/you/KEYS
 --------------------------------------------------------------------------------
@@ -171,13 +177,32 @@ pnp's encryption and integrity check are information-theoretically secure, which
    the file and the key in memory, whatever the mathematics says.
 
 The passphrase lock (`--protect`) and the way pnp is delivered (the signed apt repository, HTTPS) are only
-computationally secure, as their own sections explain.
+computationally secure, as their own sections explain. [docs/threat-model.md](docs/threat-model.md) goes through
+who pnp defends against, who it can't, and each assumption.
+
+## Hardening
+
+The guarantee above is mathematics. These protect the program that carries it out:
+
+- **A sandbox.** pnp can never open a network connection or run another program. Once a command-line run has its
+  files open, it's fenced in further: only the system calls the rest of the work needs (seccomp) and only the
+  folders its outputs go to (Landlock, Linux 5.13+). `pnp -v` says what the kernel allowed.
+- **Secrets stay in memory.** Pad, file and passphrase buffers are locked in RAM (never swapped), left out of
+  core dumps and wiped after use; `--strict` stops instead of carrying on when they can't be locked.
+- **Crash-safe saving.** Outputs take their names only once complete; a crash or power cut leaves hidden
+  leftovers at most, which the next run points out ([docs/recovery.md](docs/recovery.md)).
+- **Tested hard.** Every parser of untrusted input is fuzzed, the code is checked by three static analysers and
+  built with sanitizers in CI, the MAC is constant time ([docs/constant-time.md](docs/constant-time.md)), and pnp
+  is killed at every step of saving to check that nothing is lost.
+- **Built to be checked.** Reproducible builds, signed checksums, and an [entropy measurement](docs/entropy.md)
+  of real hardware sources. Found a problem? [SECURITY.md](SECURITY.md) says how to report it privately.
 
 ## Options
 
 | Option | Meaning |
 |---|---|
 | `-d`, `--decrypt` | Decrypt instead of encrypting |
+| `--verify` | Check `FILE.pnp` against its key or shares (that they belong together, their sizes, and the integrity check over every byte) without writing anything. Exit status 0 if it's whole. For checking archives now and then, or before a real decrypt |
 | `-k KEY`, `--key KEY` | The key to decrypt with (default `FILE.pnp.key`, or the shares `FILE.pnp.key.1`, `.2`…). For a key split into shares, give `-k` once per share, in any order |
 | `-o OUT`, `--output OUT` | Where to write: the ciphertext when encrypting (its key goes to `OUT.key`), the plaintext when decrypting |
 | `--key-out PATH` | Write the key straight into the folder `PATH` (as `FILE.pnp.key`), or to the file name `PATH`, instead of beside the ciphertext. With `--shares`: once for all shares (a folder), or once per share |
@@ -187,6 +212,7 @@ computationally secure, as their own sections explain.
 | `--passphrase-file FILE` | Read the passphrase from the first line of `FILE` instead of asking (for scripts). Anyone who can read that file has the passphrase |
 | `--gen-passphrase[=WORDS]` | Print a random passphrase of 7 words (or `WORDS`, 5 to 20) and exit |
 | `-f`, `--force` | Replace files that already exist. Without it, pnp never replaces anything |
+| `--strict` | Refuse to run if pad, file or passphrase bytes can't be locked in memory (kept out of swap), instead of only warning. With `--protect`, the passphrase hashes' memory must be lockable too, which usually means raising `ulimit -l` |
 | `-q`, `--quiet` | Don't print which sources made the key, what was written, notes, or the progress line |
 | `-v`, `--verbose` | List every random source and its state |
 | `--sources` | List the hardware random sources and exit |
@@ -271,7 +297,10 @@ did, they'd be left holding the plain key, exactly as without `--protect`: the o
 - **The passphrase is what matters most.** Hashing slows each guess, but a short or common passphrase is still
   found quickly. `--gen-passphrase` picks words from the [EFF's list of 7776](https://www.eff.org/dice) with the
   same hardware randomness as the pad: 7 words is about 90 bits, far beyond guessing. Write it down and keep it
-  apart from the key.
+  apart from the key. Want more? `--gen-passphrase=10` is about 128 bits, and the most, 20 words, is about 256
+  bits: as strong as the ChaCha20 key the lock ends in, so more words would add nothing. The interactive mode
+  lets you choose the number too. Past 7 words the gain is on paper only: a phrase too long to remember gets
+  written down, and is then only as safe as that paper.
 - **Forget the passphrase and the file is gone**, just as if the key were lost.
 - **Decrypting needs the memory too**: 1 GiB by default. pnp checks there's enough free memory before it starts,
   and stops with a message if not. On a smaller machine, choose less when encrypting (`--kdf-memory 256`), which
@@ -294,8 +323,12 @@ make                    # builds build/pnp
 make test               # runs the tests
 sudo make install       # installs to /usr/local (PREFIX=... to change)
 sudo make install-udev  # the udev rule and pnp group, so pnp can read /dev/hwrng
-make deb                # builds a .deb in build/ (needs dpkg-dev)
+make deb                # builds a .deb in build/ (needs dpkg-dev); reproducible: docs/reproducible.md
 ```
+
+For development: `make sanitize` runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer,
+`make analyze` runs gcc's `-fanalyzer`, cppcheck and clang's scan-build, and `make fuzz-run` fuzzes every parser of
+untrusted input (needs clang). CI runs all of them.
 
 ## Disclaimer: if P = NP, build from source
 
@@ -334,6 +367,12 @@ MIT. See [LICENSE](LICENSE).
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
 | [docs/code-cylinder.md](docs/code-cylinder.md) | Setting up a key drive (an external hard disk) to carry with you, and why pnp relies on physical security |
 | [docs/format.md](docs/format.md) | The file formats (ciphertext, key, key shares, keys locked with a passphrase), and how to decrypt without pnp |
+| [docs/threat-model.md](docs/threat-model.md) | Who pnp defends against, who it can't, and every assumption the guarantee rests on |
+| [docs/recovery.md](docs/recovery.md) | What an interrupted run can leave behind, and how to recover |
+| [docs/reproducible.md](docs/reproducible.md) | Rebuilding a published package bit for bit, and checking the signed checksums |
+| [docs/constant-time.md](docs/constant-time.md) | Which code runs on secrets, and why its timing doesn't depend on them |
+| [docs/entropy.md](docs/entropy.md) | NIST SP 800-90B measurements of real hardware sources, and how to measure yours |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability privately, and what happens next |
 | [man/pnp.1](man/pnp.1) | The manual page (`man pnp` once installed) |
 | [TODO.md](TODO.md) | Planned work |
 | [LICENSE](LICENSE) | The MIT license |

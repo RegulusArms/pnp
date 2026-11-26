@@ -104,8 +104,9 @@ static int read_full(int fd, uint8_t *buf, size_t n)
 int pnp_in_vm(char *what, size_t len)
 {
 #ifdef PNP_TEST
-    if (getenv("PNP_TEST_VM")) { /* test hook: "" for a physical machine, else the hypervisor's name */
-        snprintf(what, len, "%s", getenv("PNP_TEST_VM"));
+    const char *fake = getenv("PNP_TEST_VM");
+    if (fake) { /* test hook: "" for a physical machine, else the hypervisor's name */
+        snprintf(what, len, "%s", fake);
         return what[0] != 0;
     }
 #endif
@@ -268,6 +269,53 @@ static void open_rdseed(struct pnp_source *s)
     s->state = PNP_SRC_ABSENT;
     snprintf(s->detail, sizeof s->detail, "not supported by this CPU");
 }
+
+#ifdef PNP_TEST
+/* Test builds only: one source's raw output, for measuring it with NIST's SP 800-90B entropy assessment
+ * (tests/entropy/assess.sh, docs/entropy.md). The source is opened and start-up tested as for a pad, then n bytes
+ * are written to out exactly as read: no other source, no getrandom, nothing mixed in. The continuous health tests
+ * still watch them, and a failure stops the dump. */
+int pnp_rng_dump(const char *which, uint64_t n, int out)
+{
+    struct pnp_source s;
+    memset(&s, 0, sizeof s);
+    if (strcmp(which, "hwrng") == 0)
+        open_hwrng(&s);
+    else if (strcmp(which, "rdseed") == 0)
+        open_rdseed(&s);
+    else {
+        fprintf(stderr, "pnp: PNP_TEST_DUMP takes hwrng or rdseed\n");
+        return -1;
+    }
+    if (s.state != PNP_SRC_OK) {
+        fprintf(stderr, "pnp: %s isn't usable: %s\n", s.name, s.detail);
+        if (s.fd >= 0)
+            close(s.fd);
+        return -1;
+    }
+    static uint8_t buf[65536];
+    int ret = 0;
+    while (n && ret == 0) {
+        size_t k = n < sizeof buf ? (size_t)n : sizeof buf;
+        if (source_read(&s, buf, k) < 0 || pnp_health_feed(&s.health, buf, k) < 0) {
+            fprintf(stderr, "pnp: %s failed while dumping\n", s.name);
+            ret = -1;
+        } else {
+            for (size_t w = 0; w < k && ret == 0;) {
+                ssize_t r = write(out, buf + w, k - w);
+                if (r < 0 && errno != EINTR)
+                    ret = -1;
+                else if (r > 0)
+                    w += (size_t)r;
+            }
+            n -= k;
+        }
+    }
+    if (s.fd >= 0)
+        close(s.fd);
+    return ret;
+}
+#endif
 
 void pnp_rng_open(struct pnp_rng *rng)
 {

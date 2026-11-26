@@ -24,6 +24,7 @@
 #include "progress.h"
 #include "protect.h"
 #include "rng.h"
+#include "sandbox.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -40,6 +41,7 @@
 #include <sys/prctl.h>
 #include <sys/random.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -55,24 +57,81 @@
 
 extern volatile sig_atomic_t pnp_stop;
 
-/* plaintext, pad, output and share buffers: locked in RAM where allowed (never swapped) and wiped after use */
-static uint8_t buf_in[CHUNK], buf_pad[CHUNK], buf_out[CHUNK], buf_share[CHUNK];
-static char pass[PNP_PASS_MAX]; /* the passphrase (--protect): locked and wiped the same way */
-static char preset[PNP_PASS_MAX]; /* a passphrase given in advance (pnp_preset_passphrase): locked too */
-static int mlock_failed; /* some buffer couldn't be locked (RLIMIT_MEMLOCK): said once, before pad bytes are made */
+/* Every buffer that holds secrets lives in one region (secure_setup): plaintext, pad, output and share chunks, the
+ * passphrase, a passphrase given in advance (pnp_preset_passphrase), and two scratch passphrase buffers for the
+ * interactive mode and --gen-passphrase (pnp_secure_buf). The region is locked in RAM where the limit allows (never
+ * swapped), left out of core dumps, wiped in any child if something ever forked (MADV_WIPEONFORK), and wiped
+ * after use. */
+static uint8_t *buf_in, *buf_pad, *buf_out, *buf_share;
+static char *pass, *preset, *scratch[2];
+#define SECURE_LEN (4 * CHUNK + 4 * PNP_PASS_MAX)
+static int mlock_failed; /* the region or the stack window couldn't be locked: said once, or refused with --strict */
+static int strict;       /* --strict: refuse to work with secrets that can't be locked in memory */
 
 static int quiet;
+static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static int sandbox_early;  /* the early seccomp filter is on (sandbox.c) */
+static int sandbox_cli;    /* a command-line run: fence pnp in once its files are open (not the interactive mode) */
+static int sandbox_say;    /* -v: say what the sandbox could do */
 
 static void wipe_buffers(void)
 {
-    explicit_bzero(buf_in, sizeof buf_in);
-    explicit_bzero(buf_pad, sizeof buf_pad);
-    explicit_bzero(buf_out, sizeof buf_out);
-    explicit_bzero(buf_share, sizeof buf_share);
-    explicit_bzero(pass, sizeof pass);
+    explicit_bzero(buf_in, CHUNK);
+    explicit_bzero(buf_pad, CHUNK);
+    explicit_bzero(buf_out, CHUNK);
+    explicit_bzero(buf_share, CHUNK);
+    explicit_bzero(pass, PNP_PASS_MAX);
 }
 
+char *pnp_secure_buf(int which) { return scratch[which & 1]; }
+
 static void on_signal(int sig) { pnp_stop = sig; }
+
+/* The main thread's stack, where short-lived secrets sit in local variables: the MAC key, the key a passphrase
+ * makes, the passphrase typed a second time, the hashes' last blocks. A window of it below main() is touched (so
+ * the pages exist) and locked, which covers every deeper call frame within it. 256 KiB is far more than pnp's
+ * calls go down, and well inside the usual 8 MiB limit. The threads Argon2id starts have stacks of their own,
+ * which this doesn't cover: they hold blocks of the hash's memory, which is locked only when the limit allows
+ * (kdf.c). */
+#define STACK_LOCK (256 * 1024)
+static __attribute__((noinline)) int lock_stack(void)
+{
+    volatile uint8_t window[STACK_LOCK];
+    for (size_t i = 0; i < sizeof window; i += 4096)
+        window[i] = 0;
+    uintptr_t lo = (uintptr_t)window & ~(uintptr_t)4095, hi = (uintptr_t)window + sizeof window;
+    return mlock((void *)lo, hi - lo);
+}
+
+/* the secure region (see the top of this file), with the stack window */
+static void secure_setup(void)
+{
+    uint8_t *r = mmap(NULL, SECURE_LEN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (r == MAP_FAILED) {
+        fprintf(stderr, "pnp: out of memory\n");
+        exit(1);
+    }
+    madvise(r, SECURE_LEN, MADV_DONTDUMP);
+#ifdef MADV_WIPEONFORK
+    madvise(r, SECURE_LEN, MADV_WIPEONFORK); /* pnp never forks; this is for anything that ever might */
+#endif
+    buf_in = r, buf_pad = r + CHUNK, buf_out = r + 2 * CHUNK, buf_share = r + 3 * CHUNK;
+    pass = (char *)r + 4 * CHUNK, preset = pass + PNP_PASS_MAX;
+    scratch[0] = preset + PNP_PASS_MAX, scratch[1] = scratch[0] + PNP_PASS_MAX;
+    /* kept out of swap, where pad, plaintext or passphrase bytes would outlive the run. The limit (ulimit -l) is
+     * usually 8 MiB, plenty for these; if it's lower, pnp says so (note_unlocked), or with --strict refuses. */
+    mlock_failed = mlock(r, SECURE_LEN) < 0;
+    mlock_failed |= lock_stack() < 0;
+}
+
+/* whether len more bytes could be locked: the limit, less what's locked already and some room */
+static int can_lock(uint64_t len)
+{
+    struct rlimit rl;
+    if (geteuid() == 0 || (getrlimit(RLIMIT_MEMLOCK, &rl) == 0 && rl.rlim_cur == RLIM_INFINITY))
+        return 1;
+    return getrlimit(RLIMIT_MEMLOCK, &rl) == 0 && rl.rlim_cur >= len + SECURE_LEN + STACK_LOCK + (1 << 20);
+}
 
 static void setup_process(void)
 {
@@ -87,10 +146,59 @@ static void setup_process(void)
     struct rlimit none = {0, 0};
     setrlimit(RLIMIT_CORE, &none);
     prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
-    /* kept out of swap, where pad, plaintext or passphrase bytes would outlive the run. The limit (ulimit -l) is
-     * usually 8 MiB, plenty for these; if it's lower, pnp says so (note_unlocked) rather than stopping. */
-    mlock_failed = mlock(buf_in, sizeof buf_in) | mlock(buf_pad, sizeof buf_pad) | mlock(buf_out, sizeof buf_out) |
-                   mlock(buf_share, sizeof buf_share) | mlock(pass, sizeof pass) | mlock(preset, sizeof preset);
+    secure_setup();
+    sandbox_early = pnp_sandbox_early() == 0;
+}
+
+/* Once every file a command-line run reads is open and every output's part file exists, the rest of the run
+ * needs only those folders and a few system calls: pnp_sandbox_work fences it in (sandbox.c). The interactive mode
+ * goes on to other files afterwards, so it keeps only the early filter. */
+static void fence_in(char *const *paths, int n)
+{
+    if (!sandbox_cli)
+        return;
+    char *dirs[MAX_SHARES + 1] = {0};
+    int nd = 0;
+    for (int i = 0; i < n; i++)
+        if ((dirs[nd] = pnp_dir_of(paths[i])))
+            nd++;
+    struct pnp_sandbox_state st;
+    pnp_sandbox_work(dirs, nd, &st);
+    for (int i = 0; i < nd; i++)
+        free(dirs[i]);
+    if (sandbox_say) {
+        char ll[64] = "not available in this kernel";
+        if (st.landlock_abi > 0)
+            snprintf(ll, sizeof ll, "on (ABI %d)", st.landlock_abi);
+        say("sandbox: no new privileges; seccomp %s, %s; Landlock %s", sandbox_early ? "on" : "off",
+            st.seccomp ? "work filter on" : "work filter off", ll);
+    }
+#ifdef PNP_TEST
+    /* test hook: what the sandbox lets through now */
+    const char *probe = getenv("PNP_TEST_PROBE");
+    if (probe) {
+        int fd = open(probe, O_RDONLY | O_CLOEXEC);
+        fprintf(stderr, "probe read %s: %s\n", probe, fd >= 0 ? "allowed" : strerror(errno));
+        if (fd >= 0)
+            close(fd);
+        char made[PATH_MAX];
+        snprintf(made, sizeof made, "%s.made", probe);
+        fd = open(made, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        fprintf(stderr, "probe create: %s\n", fd >= 0 ? "allowed" : strerror(errno));
+        if (fd >= 0)
+            close(fd);
+        char *pdir = pnp_dir_of(probe); /* what pnp_sync_dir does after saving: must pass */
+        fd = pdir ? open(pdir, O_RDONLY | O_DIRECTORY | O_CLOEXEC) : -1;
+        fprintf(stderr, "probe folder: %s\n", fd >= 0 ? "allowed" : strerror(errno));
+        if (fd >= 0)
+            close(fd);
+        free(pdir);
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        fprintf(stderr, "probe socket: %s\n", fd >= 0 ? "allowed" : strerror(errno));
+        if (getenv("PNP_TEST_PROBE_EXEC"))
+            execl("/bin/true", "true", (char *)NULL); /* must kill the process */
+    }
+#endif
 }
 
 /* after cleaning up, die of the signal that stopped us, so the shell sees it */
@@ -125,6 +233,9 @@ static void say(const char *fmt, ...)
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     pnp_clean(msg);
+#ifdef PNP_FUZZ
+    return; /* tests/fuzz: formatted and cleaned (so that's fuzzed too), but stderr is left to the fuzzer */
+#endif
     pnp_progress_interrupt(); /* a progress line on the screen is wiped first */
     fprintf(stderr, "pnp: %s\n", msg);
 }
@@ -137,9 +248,13 @@ static void usage(FILE *f)
             "                                    encrypt FILE to FILE.pnp and its key FILE.pnp.key\n"
             "       pnp -d [-f] [-q] [-k KEY]... [-o OUT] [--passphrase-file FILE] FILE.pnp\n"
             "                                    decrypt FILE.pnp with FILE.pnp.key (or its shares) to FILE\n"
-            "       pnp                          (alone, in a terminal) browse files and encrypt or decrypt them\n"
+            "       pnp --verify [-q] [-k KEY]... [--passphrase-file FILE] FILE.pnp\n"
+            "                                    check FILE.pnp against its key or shares (IDs, sizes and the\n"
+            "                                    integrity check) without writing anything\n"
+            "       pnp [--strict]               (alone, in a terminal) browse files and encrypt or decrypt them\n"
             "       pnp --sources                list the hardware random sources and whether they're usable\n"
-            "       pnp --gen-passphrase[=WORDS] print a random passphrase (7 words unless WORDS, 5-20)\n"
+            "       pnp --gen-passphrase[=WORDS] print a random passphrase (7 words unless WORDS, 5-20;\n"
+            "                                    each is 12.9 bits: 7 about 90, 10 about 128, 20 about 256)\n"
             "\n"
             "  -d, --decrypt   decrypt instead of encrypting\n"
             "  -k, --key KEY   the key file to decrypt with (default: FILE.pnp.key, or FILE.pnp.key.1, .2...);\n"
@@ -154,6 +269,8 @@ static void usage(FILE *f)
             "      --kdf-memory MIB  memory each passphrase guess costs, for --protect (default %d, %d-%d)\n"
             "      --passphrase-file FILE  read the passphrase from FILE's first line instead of the terminal\n"
             "  -f, --force     replace output files that already exist\n"
+            "      --strict    refuse to run if pad, file or passphrase bytes can't be locked in memory (kept\n"
+            "                  out of swap), instead of only warning; with --protect, the hashes' memory too\n"
             "  -q, --quiet     don't print which random sources made the pad, notes, or progress\n"
             "  -v, --verbose   print every random source and its state\n"
             "  -V, --version   print the version\n"
@@ -204,12 +321,35 @@ static const char *state_text(enum pnp_source_state s)
     return "?";
 }
 
-static void note_unlocked(void)
+/* -1 (after saying why) when --strict and the buffers aren't locked; otherwise a note, once */
+static int check_locked(void)
 {
     static int said;
+    if (mlock_failed && strict) {
+        say("--strict: pnp couldn't lock its buffers in memory (the limit, ulimit -l, is too low), so it stops "
+            "rather than risk pad, file or passphrase bytes reaching swap. Raise the limit (ulimit -l 8192) or "
+            "leave out --strict.");
+        return -1;
+    }
     if (mlock_failed && !quiet && !said++)
         say("note: pnp couldn't lock its buffers in memory (the limit, ulimit -l, is too low), so pad and file "
-            "bytes could be written to swap. Raise the limit or turn swap off.");
+            "bytes could be written to swap. Raise the limit or turn swap off (or use --strict to stop instead).");
+    return 0;
+}
+
+/* --strict and --protect: the passphrase hashes' memory must be lockable too (kdf.c locks it when it can) */
+static int check_kdf_lockable(const struct pnp_protect *p)
+{
+    uint64_t need = (uint64_t)pnp_protect_need_mib(p) << 20;
+    pnp_kdf_set_strict(strict);
+    if (strict && !can_lock(need)) {
+        say("--strict: the passphrase hashes need %u MiB locked in memory, more than the limit (ulimit -l) allows. "
+            "Raise it (ulimit -l %llu, or memlock in /etc/security/limits.conf), choose less with --kdf-memory when "
+            "encrypting, or leave out --strict.",
+            pnp_protect_need_mib(p), (unsigned long long)((need + SECURE_LEN + STACK_LOCK + (2 << 20)) >> 10));
+        return -1;
+    }
+    return 0;
 }
 
 /* a virtual machine's host can see everything: said before making a pad or passphrase there */
@@ -390,6 +530,55 @@ out:
     return ret;
 }
 
+/* A run killed or cut off by a power loss partway leaves hidden files behind (fileio.c): parts of outputs that
+ * were never finished, and, with -f, old files moved aside that were never put back. Said before writing into a
+ * folder that holds any, with what to do (docs/recovery.md). Nothing is deleted or renamed automatically: only
+ * the user can tell which copy they want. */
+struct leftovers {
+    int total, here; /* found in all folders, and in this one */
+};
+
+static void leftover_found(const char *dir, const char *entry, const char *name, int old, void *ctx)
+{
+    struct leftovers *n = ctx;
+    n->total++;
+    if (n->here++ == 0) /* a heading for each folder: the key's may be on another drive */
+        say("note: %s holds files left by a pnp run that was interrupted (a crash, a kill or a power cut):", dir);
+    char line[1024];
+    if (old)
+        snprintf(line, sizeof line, "  %s: the old %s, moved aside by pnp -f to be replaced. To undo that run, put "
+                 "back every .pnp-old file it left (ciphertext and key together): mv -f '%s/%s' '%s/%s'", entry, name,
+                 dir, entry, dir, name);
+    else
+        snprintf(line, sizeof line, "  %s: an unfinished %s (it may hold pad or plaintext bytes). Delete it, and run "
+                 "pnp again if %s is missing", entry, name, name);
+    pnp_clean(line);
+    fprintf(stderr, "%s\n", line);
+}
+
+static void note_leftovers(char *const *paths, int n)
+{
+    char *seen[MAX_SHARES + 2] = {0};
+    if (n > MAX_SHARES + 2)
+        n = MAX_SHARES + 2;
+    struct leftovers found = {0, 0};
+    for (int i = 0; i < n && !quiet; i++) {
+        char *dir = pnp_dir_of(paths[i]), *real = dir ? realpath(dir, NULL) : NULL;
+        int dup = !real;
+        for (int j = 0; real && j < i; j++)
+            dup |= seen[j] && strcmp(seen[j], real) == 0;
+        found.here = 0;
+        if (!dup)
+            pnp_find_leftovers(dir, leftover_found, &found);
+        seen[i] = real;
+        free(dir);
+    }
+    if (found.total)
+        fprintf(stderr, "  (more in docs/recovery.md, or man pnp under RECOVERY)\n");
+    for (int i = 0; i < n; i++)
+        free(seen[i]);
+}
+
 /* No output may be the input, another output, or (without -f) an existing file. -1 after saying why. */
 static int check_outputs(char *const *paths, int n, const struct stat *in_st, int force)
 {
@@ -457,8 +646,8 @@ static long preset_len = -1;
 
 void pnp_preset_passphrase(const char *p, size_t len)
 {
-    if (len >= sizeof preset)
-        len = sizeof preset - 1;
+    if (len >= PNP_PASS_MAX)
+        len = PNP_PASS_MAX - 1;
     memcpy(preset, p, len);
     preset[len] = 0;
     preset_len = (long)len;
@@ -466,7 +655,7 @@ void pnp_preset_passphrase(const char *p, size_t len)
 
 void pnp_clear_passphrase(void)
 {
-    explicit_bzero(preset, sizeof preset);
+    explicit_bzero(preset, PNP_PASS_MAX);
     preset_len = -1;
 }
 
@@ -477,7 +666,7 @@ static long get_passphrase(const char *file, int confirm, char *err, size_t errl
         memcpy(pass, preset, (size_t)preset_len + 1);
         return preset_len;
     }
-    return pnp_read_passphrase(file, confirm, pass, sizeof pass, err, errlen);
+    return pnp_read_passphrase(file, confirm, pass, PNP_PASS_MAX, err, errlen);
 }
 
 /* A progress line for the passphrase hashes (kdf.c reports Balloon, then Argon2id): one line per phase. */
@@ -537,7 +726,6 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
     int ret = 1, in = -1;
     struct stat st;
 
-    note_unlocked();
     struct pnp_progress prog;
     memset(&prog, 0, sizeof prog);
     memset(&mac, 0, sizeof mac);
@@ -549,7 +737,7 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
         key[i].fd = -1;
     memset(&rng, 0, sizeof rng);
 
-    if ((in = open_input(in_path, &st)) < 0)
+    if (check_locked() < 0 || (in = open_input(in_path, &st)) < 0)
         goto out;
     if (out_opt ? asprintf(&ct_path, "%s", out_opt) < 0 : asprintf(&ct_path, "%s.pnp", in_path) < 0) {
         ct_path = NULL;
@@ -563,6 +751,7 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
     memcpy(all + 1, key_path, (size_t)nkeys * sizeof *all);
     if (check_outputs(all, nkeys + 1, &st, force) < 0)
         goto out;
+    note_leftovers(all, nkeys + 1);
     if (open_sources(&rng, verbose, "pad") < 0)
         goto out;
     if (po->on) {
@@ -584,6 +773,8 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
             goto out;
         }
         long avail;
+        if (check_kdf_lockable(&prot) < 0)
+            goto out;
         if (memory_short(&prot, &avail) < 0) {
             say("--protect needs about %u MiB of free memory here (and again on the computer that decrypts), but "
                 "only %ld MiB is available: choose less with --kdf-memory, or close other programs",
@@ -597,10 +788,11 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
         int locked = pnp_protect_lock(&prot, pass, (size_t)plen, wkey);
         kdf_progress_off();
         if (locked < 0) {
-            say("can't get the %u MiB of memory --protect needs (choose less with --kdf-memory)", kdf_mib(&prot));
+            say("can't get%s the %u MiB of memory --protect needs (choose less with --kdf-memory)",
+                strict ? " and lock" : "", kdf_mib(&prot));
             goto out;
         }
-        explicit_bzero(pass, sizeof pass);
+        explicit_bzero(pass, PNP_PASS_MAX);
         pnp_protect_encode(&prot, pblock);
         for (int i = 0; i < nkeys; i++)
             pnp_protect_stream(&wrap[i], wkey, shares ? i + 1 : 0);
@@ -623,6 +815,7 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
         say("%s", err);
         goto out;
     }
+    fence_in(all, nkeys + 1);
     for (int i = 0; i < nkeys; i++) {
         memcpy(header, shares ? (po->on ? MAGIC_SHARE_P : MAGIC_SHARE) : po->on ? MAGIC_KEY_P : MAGIC_KEY, MAGIC_LEN);
         header[HEADER_LEN] = (uint8_t)(i + 1);
@@ -761,7 +954,7 @@ out:
     return ret;
 }
 
-enum pnp_kind { KIND_CT, KIND_KEY, KIND_SHARE };
+enum pnp_kind { KIND_CT = PNP_H_CT, KIND_KEY = PNP_H_KEY, KIND_SHARE = PNP_H_SHARE };
 
 struct pnp_file {
     int fd;
@@ -774,69 +967,55 @@ struct pnp_file {
     struct pnp_protect pp;
 };
 
-/* Opens a ciphertext (want KIND_CT) or a key or share (want KIND_KEY) and reads its header. Returns 0, or -1 after
- * saying why (f->fd is then -1). */
+/* Opens a ciphertext (want KIND_CT) or a key or share (want KIND_KEY) and reads its header (pnp_hdr_parse, the
+ * same parser the interactive mode uses), leaving the file at the start of its body. Returns 0, or -1 after saying
+ * why (f->fd is then -1). */
 static int open_pnp_file(const char *path, enum pnp_kind want, struct pnp_file *f)
 {
     struct stat st;
-    uint8_t h[SHARE_HEADER_LEN];
+    struct pnp_hdr h;
+    uint8_t b[PNP_HDR_MAX];
     f->fd = open_input(path, &st);
     if (f->fd < 0)
         return -1;
-    ssize_t n = read_some(f->fd, h, HEADER_LEN);
-    int full = n == HEADER_LEN;
-    int ct1 = full && memcmp(h, MAGIC_CT_V1, MAGIC_LEN) == 0, key1 = full && memcmp(h, MAGIC_KEY_V1, MAGIC_LEN) == 0;
-    int ct = ct1 || (full && memcmp(h, MAGIC_CT, MAGIC_LEN) == 0);
-    int keyp = full && memcmp(h, MAGIC_KEY_P, MAGIC_LEN) == 0, sharep = full && memcmp(h, MAGIC_SHARE_P, MAGIC_LEN) == 0;
-    int key = key1 || keyp || (full && memcmp(h, MAGIC_KEY, MAGIC_LEN) == 0);
-    int share = sharep || (full && memcmp(h, MAGIC_SHARE, MAGIC_LEN) == 0);
-    if (want == KIND_CT && (key || share)) {
-        say("%s is a pnp %s, not a ciphertext", path, key ? "key" : "key share");
+    ssize_t n = read_some(f->fd, b, sizeof b);
+    int r = n < 0 ? PNP_HDR_NOT_PNP : pnp_hdr_parse(b, (size_t)n, (uint64_t)st.st_size, &h);
+    if (n < 0) {
+        say("can't read %s: %s", path, strerror(errno));
         goto fail;
     }
-    if (want == KIND_KEY && ct) {
+    if (want == KIND_CT && (h.kind == PNP_H_KEY || h.kind == PNP_H_SHARE)) {
+        say("%s is a pnp %s, not a ciphertext", path, h.kind == PNP_H_KEY ? "key" : "key share");
+        goto fail;
+    }
+    if (want == KIND_KEY && h.kind == PNP_H_CT) {
         say("%s is a pnp ciphertext, not a key", path);
         goto fail;
     }
-    if (!ct && !key && !share) {
+    switch (r) {
+    case PNP_HDR_OK: break;
+    case PNP_HDR_NOT_PNP:
         say("%s isn't a pnp %s (or it's from a newer version of pnp)", path, want == KIND_CT ? "ciphertext" : "key");
         goto fail;
+    case PNP_HDR_BAD_SHARE: say("%s is a damaged key share", path); goto fail;
+    case PNP_HDR_BAD_PROTECT:
+        say("%s asks for passphrase settings pnp doesn't accept: it's damaged, or from a newer version of pnp", path);
+        goto fail;
+    default: say("%s is too short: it's damaged or incomplete", path); goto fail;
     }
-    f->kind = ct ? KIND_CT : key ? KIND_KEY : KIND_SHARE;
-    memcpy(f->id, h + MAGIC_LEN, ID_LEN);
-    f->version = ct1 || key1 ? 1 : 2;
-    f->num = f->count = 0;
-    f->body = st.st_size - HEADER_LEN;
-    if (f->version == 2)
-        f->body -= ct ? PNP_MAC_TAG_LEN : PNP_MAC_KEY_LEN;
-    if (share) {
-        if (read_some(f->fd, h + HEADER_LEN, 2) != 2 || h[HEADER_LEN + 1] < 2 || h[HEADER_LEN] < 1 ||
-            h[HEADER_LEN] > h[HEADER_LEN + 1]) {
-            say("%s is a damaged key share", path);
-            goto fail;
-        }
-        f->num = h[HEADER_LEN];
-        f->count = h[HEADER_LEN + 1];
-        f->body -= 2;
-    }
-    f->prot = keyp || sharep;
-    if (f->prot) {
-        uint8_t pb[PNP_PROTECT_LEN];
-        if (read_some(f->fd, pb, sizeof pb) != (ssize_t)sizeof pb) {
-            say("%s is too short: it's damaged or incomplete", path);
-            goto fail;
-        }
-        if (pnp_protect_decode(&f->pp, pb) < 0) {
-            say("%s asks for passphrase settings pnp doesn't accept: it's damaged, or from a newer version of pnp",
-                path);
-            goto fail;
-        }
-        f->body -= PNP_PROTECT_LEN;
-    }
-    if (f->body < 0) {
-        say("%s is too short: it's damaged or incomplete", path);
+    /* the body starts right after the header; a file larger than off_t can hold can't exist here */
+    if (lseek(f->fd, (off_t)h.len, SEEK_SET) < 0) {
+        say("can't read %s: %s", path, strerror(errno));
         goto fail;
     }
+    f->kind = (enum pnp_kind)h.kind;
+    memcpy(f->id, h.id, ID_LEN);
+    f->version = h.version;
+    f->num = h.num;
+    f->count = h.count;
+    f->body = (off_t)h.body;
+    f->prot = h.prot;
+    f->pp = h.pp;
     return 0;
 fail:
     close(f->fd);
@@ -912,6 +1091,8 @@ static int unlock_keys(char *const *kp, const struct pnp_file *kf, int nk, const
         }
         if (!done || memcmp(&kf[k].pp, done, sizeof *done) != 0) {
             long avail;
+            if (check_kdf_lockable(&kf[k].pp) < 0)
+                goto out;
             if (memory_short(&kf[k].pp, &avail) < 0) {
                 say("unlocking %s needs about %u MiB of free memory, but only %ld MiB is available: close other "
                     "programs, or decrypt on a computer with more memory",
@@ -924,7 +1105,8 @@ static int unlock_keys(char *const *kp, const struct pnp_file *kf, int nk, const
             int r = pnp_protect_unlock(&kf[k].pp, pass, (size_t)plen, wkey);
             kdf_progress_off();
             if (r == -1) {
-                say("can't get the %u MiB of memory unlocking %s needs", kdf_mib(&kf[k].pp), kp[k]);
+                say("can't get%s the %u MiB of memory unlocking %s needs", strict ? " and lock" : "",
+                    kdf_mib(&kf[k].pp), kp[k]);
                 goto out;
             }
             if (r == -2) {
@@ -937,25 +1119,24 @@ static int unlock_keys(char *const *kp, const struct pnp_file *kf, int nk, const
     }
     ret = 0;
 out:
-    explicit_bzero(pass, sizeof pass);
+    explicit_bzero(pass, PNP_PASS_MAX);
     explicit_bzero(wkey, sizeof wkey);
     return ret;
 }
 
 int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, const char *out_opt, int force,
-                const char *passfile)
+                const char *passfile, int verify)
 {
     char *kp[MAX_SHARES] = {0}, *out_path = NULL;
     struct pnp_file ct, kf[MAX_SHARES];
     struct pnp_out out;
     struct pnp_mac mac;
     struct pnp_chacha20 wrap[MAX_SHARES];
-    uint8_t mackey[PNP_MAC_KEY_LEN], tag[PNP_MAC_TAG_LEN], want[PNP_MAC_TAG_LEN];
+    uint8_t mackey[PNP_MAC_KEY_LEN] = {0}, tag[PNP_MAC_TAG_LEN], want[PNP_MAC_TAG_LEN];
     char err[512];
     int ret = 1, nk = 0, find_shares = 0;
     struct stat st;
 
-    note_unlocked();
     struct pnp_progress prog;
     memset(&prog, 0, sizeof prog);
     memset(&mac, 0, sizeof mac);
@@ -966,7 +1147,11 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
     for (int k = 0; k < MAX_SHARES; k++)
         kf[k].fd = -1;
 
-    if (out_opt) {
+    if (check_locked() < 0)
+        goto out;
+    if (verify) {
+        out_path = strdup("(none)"); /* --verify writes nothing */
+    } else if (out_opt) {
         out_path = strdup(out_opt);
     } else if (ends_with(ct_path, ".pnp") && strlen(ct_path) > 4) {
         out_path = strndup(ct_path, strlen(ct_path) - 4);
@@ -1019,20 +1204,31 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
     }
     if (check_keys(ct_path, &ct, kp, kf, nk) < 0)
         goto out;
-    if (fstat(ct.fd, &st) == 0 && same_file(out_path, &st)) {
+    if (verify) {
+        /* nothing is written, so no output to check */
+    } else if (fstat(ct.fd, &st) == 0 && same_file(out_path, &st)) {
         say("the output would overwrite the ciphertext or the key");
         goto out;
     }
-    for (int k = 0; k < nk; k++) {
+    for (int k = 0; k < nk && !verify; k++) {
         if (fstat(kf[k].fd, &st) == 0 && same_file(out_path, &st)) {
             say("the output would overwrite the ciphertext or the key");
             goto out;
         }
     }
-    if (!force && exists(out_path)) {
+    if (!verify && !force && exists(out_path)) {
         say("%s already exists (use -f to replace it)", out_path);
         goto out;
     }
+    /* where this run writes, and where the ciphertext and keys were written by the run that made them */
+    char *dirs_to_check[MAX_SHARES + 2];
+    int ndc = 0;
+    if (!verify)
+        dirs_to_check[ndc++] = out_path;
+    dirs_to_check[ndc++] = (char *)ct_path;
+    for (int k = 0; k < nk; k++)
+        dirs_to_check[ndc++] = kp[k];
+    note_leftovers(dirs_to_check, ndc);
     if (unlock_keys(kp, kf, nk, passfile, wrap) < 0)
         goto out;
     int checked = ct.version >= 2;
@@ -1058,11 +1254,12 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
             "check: changes to it can't be detected",
             ct_path);
     }
-    if (pnp_out_open(&out, out_path, 0600, err, sizeof err) < 0) {
+    if (!verify && pnp_out_open(&out, out_path, 0600, err, sizeof err) < 0) {
         say("%s", err);
         goto out;
     }
-    pnp_progress_start(&prog, "decrypting", ct_path, (uint64_t)ct.body, !quiet);
+    fence_in(&out_path, verify ? 0 : 1);
+    pnp_progress_start(&prog, verify ? "verifying" : "decrypting", ct_path, (uint64_t)ct.body, !quiet);
     for (off_t left = ct.body; left > 0;) {
         if (pnp_stop)
             goto out;
@@ -1089,7 +1286,7 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
             buf_out[i] = buf_in[i] ^ buf_pad[i];
         if (checked)
             pnp_mac_feed(&mac, buf_out, (size_t)n);
-        if (pnp_write_all(out.fd, buf_out, (size_t)n) < 0) {
+        if (!verify && pnp_write_all(out.fd, buf_out, (size_t)n) < 0) {
             say("can't write %s: %s", out_path, strerror(errno));
             goto out;
         }
@@ -1111,10 +1308,24 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
     if (checked) {
         pnp_mac_final(&mac, tag);
         if (pnp_mac_tag_cmp(tag, want) != 0) {
-            say("%s or its key has been changed or damaged: the integrity check failed. Nothing was written.",
-                ct_path);
+            say("%s or its key has been changed or damaged: the integrity check failed.%s", ct_path,
+                verify ? "" : " Nothing was written.");
             goto out;
         }
+    }
+    if (verify) {
+        /* with -q, the exit status is the answer */
+        if (quiet)
+            ;
+        else if (checked)
+            say("%s is whole: its key %s, its size and its integrity check are right (%lld bytes; nothing written)",
+                ct_path, nk > 1 ? "shares match it" : "matches it", (long long)ct.body);
+        else
+            say("%s matches its key and size, but it's in the old format without an integrity check, so its "
+                "contents can't be checked",
+                ct_path);
+        ret = 0;
+        goto out;
     }
     if (pnp_out_commit(&out, force, err, sizeof err) < 0) {
         say("%s", err);
@@ -1162,7 +1373,7 @@ int pnp_make_passphrase(int n, char *buf, size_t len, int verbose)
     size_t used = 0;
     memset(&rng, 0, sizeof rng);
     buf[0] = 0;
-    if (open_sources(&rng, verbose, "passphrase") < 0)
+    if (check_locked() < 0 || open_sources(&rng, verbose, "passphrase") < 0)
         goto out;
     for (int i = 0; i < n; i++) {
         uint8_t b[2];
@@ -1192,17 +1403,27 @@ out:
 /* --gen-passphrase: prints n words */
 static int gen_passphrase(int n, int verbose)
 {
-    char words[PNP_PASS_MAX];
-    if (pnp_make_passphrase(n, words, sizeof words, verbose) < 0)
+    char *words = pnp_secure_buf(0);
+    if (pnp_make_passphrase(n, words, PNP_PASS_MAX, verbose) < 0)
         return 1;
     printf("%s\n", words);
     fflush(stdout);
-    explicit_bzero(words, sizeof words);
+    explicit_bzero(words, PNP_PASS_MAX);
     if (!quiet)
         say("%d words from a list of %d: about %d bits. Write it down somewhere safe, away from the key.", n, NWORDS,
             n * 1292 / 100);
     return 0;
 }
+
+#ifdef PNP_FUZZ
+/* tests/fuzz/fuzz_verify.c: what main() would set up, without options, signals or the sandbox */
+void pnp_fuzz_init(void);
+void pnp_fuzz_init(void)
+{
+    secure_setup();
+    quiet = 1;
+}
+#endif
 
 static int parse_int(const char *opt, const char *s, long lo, long hi, long *v)
 {
@@ -1218,7 +1439,7 @@ static int parse_int(const char *opt, const char *s, long lo, long hi, long *v)
 
 int main(int argc, char **argv)
 {
-    enum { OPT_SOURCES = 256, OPT_KEY_OUT, OPT_SHARES, OPT_PROTECT, OPT_KDF_MEMORY, OPT_PASSFILE, OPT_GEN };
+    enum { OPT_SOURCES = 256, OPT_KEY_OUT, OPT_SHARES, OPT_PROTECT, OPT_KDF_MEMORY, OPT_PASSFILE, OPT_GEN, OPT_VERIFY, OPT_STRICT };
     static const struct option opts[] = {
         {"decrypt", no_argument, NULL, 'd'},         {"key", required_argument, NULL, 'k'},
         {"output", required_argument, NULL, 'o'},    {"force", no_argument, NULL, 'f'},
@@ -1228,9 +1449,11 @@ int main(int argc, char **argv)
         {"shares", required_argument, NULL, OPT_SHARES}, {"protect", no_argument, NULL, OPT_PROTECT},
         {"kdf-memory", required_argument, NULL, OPT_KDF_MEMORY},
         {"passphrase-file", required_argument, NULL, OPT_PASSFILE},
-        {"gen-passphrase", optional_argument, NULL, OPT_GEN}, {NULL, 0, NULL, 0},
+        {"gen-passphrase", optional_argument, NULL, OPT_GEN}, {"verify", no_argument, NULL, OPT_VERIFY},
+        {"strict", no_argument, NULL, OPT_STRICT},
+        {NULL, 0, NULL, 0},
     };
-    int dec = 0, force = 0, verbose = 0, sources = 0, shares = 0, nkeys = 0, nkey_outs = 0, gen = 0, kdf_set = 0, c;
+    int dec = 0, verify = 0, force = 0, verbose = 0, sources = 0, shares = 0, nkeys = 0, nkey_outs = 0, gen = 0, kdf_set = 0, c;
     struct protect_opts po = {0, PNP_PROTECT_MIB, NULL};
     long v;
     char *keys[MAX_SHARES], *key_outs[MAX_SHARES];
@@ -1239,6 +1462,8 @@ int main(int argc, char **argv)
     while ((c = getopt_long(argc, argv, "dk:o:fqvVh", opts, NULL)) != -1) {
         switch (c) {
         case 'd': dec = 1; break;
+        case OPT_VERIFY: verify = dec = 1; break;
+        case OPT_STRICT: strict = 1; break;
         case 'k':
             if (nkeys == MAX_SHARES) {
                 say("too many -k (at most %d)", MAX_SHARES);
@@ -1282,6 +1507,14 @@ int main(int argc, char **argv)
         }
     }
     setup_process();
+#ifdef PNP_TEST
+    /* test hook: one source's raw bytes to stdout, for tests/entropy/assess.sh */
+    const char *dump = getenv("PNP_TEST_DUMP");
+    if (dump) {
+        const char *bytes = getenv("PNP_TEST_DUMP_BYTES");
+        return pnp_rng_dump(dump, bytes ? strtoull(bytes, NULL, 10) : 1000000, STDOUT_FILENO) < 0 ? 1 : 0;
+    }
+#endif
     if (gen) {
         if (optind != argc) {
             usage(stderr);
@@ -1310,8 +1543,9 @@ int main(int argc, char **argv)
         return ok ? 0 : 1;
     }
     /* just "pnp", in a terminal: the interactive mode (tui.c) */
-    if (argc == 1 && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO) && getenv("TERM") &&
-        strcmp(getenv("TERM"), "dumb") != 0) {
+    const char *term = getenv("TERM");
+    if (argc == 1 + strict && optind == argc && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO) && term &&
+        strcmp(term, "dumb") != 0) {
         int ret = pnp_tui();
         pnp_clear_passphrase();
         exit_for_signal();
@@ -1319,6 +1553,10 @@ int main(int argc, char **argv)
     }
     if (optind != argc - 1) {
         usage(stderr);
+        return 2;
+    }
+    if (verify && (out_opt || force)) {
+        say("--verify writes nothing, so -o and -f don't go with it");
         return 2;
     }
     if (nkeys && !dec) {
@@ -1334,7 +1572,9 @@ int main(int argc, char **argv)
         say("--kdf-memory and --passphrase-file go with --protect");
         return 2;
     }
-    int ret = dec ? pnp_decrypt(argv[optind], keys, nkeys, out_opt, force, po.passfile)
+    sandbox_cli = 1;
+    sandbox_say = verbose;
+    int ret = dec ? pnp_decrypt(argv[optind], keys, nkeys, out_opt, force, po.passfile, verify)
                   : pnp_encrypt(argv[optind], out_opt, key_outs, nkey_outs, shares, force, verbose, &po);
     exit_for_signal();
     return ret;

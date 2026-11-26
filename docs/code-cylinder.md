@@ -102,6 +102,14 @@ This erases everything on the drive. **Check the device name twice:** choosing t
 The easiest way is pnp's interactive mode: type `pnp` in the folder with your files. It finds the drive by its
 `KEYS` label, writes new keys straight to it, and shows which key on it each `.pnp` file will be decrypted with.
 
+A label is easy to copy, though: anyone could format a stick and call it `KEYS`, and if it were plugged in instead
+of yours, your next keys would go to their drive. So the interactive mode remembers each drive it has written keys
+to by its filesystem UUID (set when the drive was formatted, kept in `~/.local/state/pnp/drives`), and says
+**"NOT the KEYS drive pnp wrote keys to before"** in red when a drive with that name shows up with another UUID.
+Stop and check which drive is plugged in. If it's a new drive of yours (a replacement or a backup), writing keys
+to it adds it to the list, and the warning goes away. A careful attacker could copy the UUID too, so this catches
+a swap, it doesn't prove the drive is yours: keeping the drive with you does that.
+
 - **Always write keys straight to the drive** with `--key-out /media/$USER/KEYS`. Without it, the key is written
   beside the ciphertext, on the computer's own disk, and a deleted file there may stay recoverable.
 - **Plug it in only while you encrypt or decrypt**, then unmount and unplug it (eject it in your file manager, or
@@ -119,6 +127,9 @@ The easiest way is pnp's interactive mode: type `pnp` in the folder with your fi
   cd /media/$USER/KEYS && sha256sum *.key > SHA256SUMS      # after adding keys
   cd /media/$USER/KEYS && sha256sum -c SHA256SUMS           # now and then
   ```
+
+  Or check each archived file against its key directly, which also runs the integrity check over every byte:
+  `pnp --verify -k /media/$USER/KEYS/FILE.pnp.key FILE.pnp`.
 
 ## Keeping the code cylinder with you
 

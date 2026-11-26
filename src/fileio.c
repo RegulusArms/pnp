@@ -13,9 +13,11 @@
 #define _GNU_SOURCE
 #include "fileio.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <libgen.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,8 +25,26 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef PNP_TEST
+/* Test builds only: PNP_TEST_CRASH_AT=N kills pnp (SIGKILL: no cleanup, like a crash) at the Nth of these points,
+ * which sit between every step that changes files: each write, each fsync, each rename, link and unlink. Tests
+ * walk N up from 1 until a run gets through, and check after each crash that nothing is lost (tests/run.sh,
+ * "crash"). With PNP_TEST_CRASH_SAY set, the point's name is printed first. */
+void pnp_crash_point(const char *what)
+{
+    static long n;
+    const char *at = getenv("PNP_TEST_CRASH_AT");
+    if (at && ++n == atol(at)) {
+        if (getenv("PNP_TEST_CRASH_SAY"))
+            fprintf(stderr, "crash: %s\n", what);
+        raise(SIGKILL);
+    }
+}
+#endif
+
 int pnp_write_all(int fd, const void *buf, size_t n)
 {
+    pnp_crash_point("write");
     const unsigned char *p = buf;
     while (n) {
         ssize_t w = write(fd, p, n);
@@ -103,6 +123,7 @@ int pnp_out_open(struct pnp_out *o, const char *path, mode_t mode, char *err, si
         snprintf(err, errlen, "can't create a file in %s: %s", dir, strerror(errno));
         goto fail;
     }
+    pnp_crash_point("part created");
     free(dir);
     free(base);
     return 0;
@@ -115,6 +136,7 @@ fail:
 
 int pnp_out_commit(struct pnp_out *o, int replace, char *err, size_t errlen)
 {
+    pnp_crash_point("before fsync");
     int synced = fsync(o->fd), e = errno;
     int closed = close(o->fd); /* always closed, even when fsync failed */
     o->fd = -1;
@@ -122,6 +144,7 @@ int pnp_out_commit(struct pnp_out *o, int replace, char *err, size_t errlen)
         snprintf(err, errlen, "can't write %s: %s", o->path, strerror(synced < 0 ? e : errno));
         return -1;
     }
+    pnp_crash_point("before rename into place");
     int r;
     if (replace) {
         r = rename(o->part, o->path);
@@ -130,6 +153,7 @@ int pnp_out_commit(struct pnp_out *o, int replace, char *err, size_t errlen)
         if (r < 0 && (errno == EINVAL || errno == ENOSYS)) {
             r = link(o->part, o->path);
             if (r == 0) {
+                pnp_crash_point("linked, before unlinking the part");
                 unlink(o->part);
             } else if (errno == EPERM || errno == ENOTSUP || errno == EOPNOTSUPP) {
                 /* no hard links here either: check, then rename (see the top of this file) */
@@ -150,6 +174,7 @@ int pnp_out_commit(struct pnp_out *o, int replace, char *err, size_t errlen)
         return -1;
     }
     o->placed = 1;
+    pnp_crash_point("renamed into place");
     return 0;
 }
 
@@ -165,6 +190,7 @@ int pnp_out_aside(struct pnp_out *o, char *err, size_t errlen)
         return errno == ENOENT ? 0 : (snprintf(err, errlen, "can't check %s: %s", o->path, strerror(errno)), -1);
     char *dir = pnp_dir_of(o->path), *base = pnp_base_of(o->path), suffix[7];
     int r = -1;
+    pnp_crash_point("before moving the old file aside");
     if (!dir || !base || suffix6(suffix) < 0 || asprintf(&o->aside, "%s/.%s.%s.pnp-old", dir, base, suffix) < 0) {
         o->aside = NULL;
         snprintf(err, errlen, "out of memory");
@@ -179,12 +205,15 @@ int pnp_out_aside(struct pnp_out *o, char *err, size_t errlen)
     }
     free(dir);
     free(base);
+    if (r == 0)
+        pnp_crash_point("old file moved aside");
     return r < 0 ? -1 : 0;
 }
 
 void pnp_out_drop_old(struct pnp_out *o)
 {
     if (o->aside) {
+        pnp_crash_point("before deleting the old file");
         unlink(o->aside);
         free(o->aside);
         o->aside = NULL;
@@ -205,9 +234,12 @@ void pnp_out_discard(struct pnp_out *o)
         close(o->fd);
     if (o->part && !o->placed)
         unlink(o->part);
-    if (o->aside) { /* a failure after moving the old file aside: put it back */
-        if (o->placed)
+    if (o->aside && o->path) { /* a failure after moving the old file aside: put it back */
+        if (o->placed) {
+            pnp_crash_point("putting back: before removing the new file");
             unlink(o->path);
+        }
+        pnp_crash_point("putting back: before renaming the old file back");
         rename(o->aside, o->path);
         free(o->aside);
     }
@@ -223,9 +255,55 @@ void pnp_sync_dir(const char *path)
     if (!dir)
         return;
     int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    pnp_crash_point("before fsyncing the folder");
     if (fd >= 0) {
         fsync(fd);
         close(fd);
     }
     free(dir);
+}
+
+/* Leftovers of a run that was killed or lost power partway (see the top of this file and docs/recovery.md): a part
+ * is ".NAME.XXXXXX.pnp-part", an old file moved aside ".NAME.XXXXXX.pnp-old". Only names in exactly that shape
+ * count, so a user's own file is never reported. */
+int pnp_leftover_name(const char *entry, char *name, size_t len, int *old)
+{
+    static const char part[] = ".pnp-part", aside[] = ".pnp-old";
+    size_t n = strlen(entry), sfx;
+    if (n > sizeof part - 1 && strcmp(entry + n - (sizeof part - 1), part) == 0)
+        sfx = sizeof part - 1, *old = 0;
+    else if (n > sizeof aside - 1 && strcmp(entry + n - (sizeof aside - 1), aside) == 0)
+        sfx = sizeof aside - 1, *old = 1;
+    else
+        return -1;
+    /* "." + NAME (at least 1) + "." + 6 letters + suffix */
+    if (entry[0] != '.' || n < 1 + 1 + 7 + sfx || entry[n - sfx - 7] != '.')
+        return -1;
+    size_t name_len = n - sfx - 7 - 1;
+    if (name_len + 1 > len)
+        return -1;
+    memcpy(name, entry + 1, name_len);
+    name[name_len] = 0;
+    return 0;
+}
+
+int pnp_find_leftovers(const char *dir, void (*found)(const char *dir, const char *entry, const char *name, int old,
+                                                      void *ctx),
+                       void *ctx)
+{
+    DIR *d = opendir(dir);
+    if (!d)
+        return 0;
+    int count = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        char name[256];
+        int old;
+        if (pnp_leftover_name(e->d_name, name, sizeof name, &old) == 0) {
+            found(dir, e->d_name, name, old, ctx);
+            count++;
+        }
+    }
+    closedir(d);
+    return count;
 }
