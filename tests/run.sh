@@ -96,6 +96,107 @@ check '[[ "$("$B/pnp" --version)" == "pnp $(cat VERSION)" ]]' "--version prints 
 check '! "$PNP" -q "$T/w" 2>"$T/err" && grep -q "regular file" "$T/err"' "a folder is refused"
 check '! "$PNP" -q "$T/w/missing" 2>/dev/null && no_parts' "a missing file is refused"
 
+# --- --key-out: the key goes straight to another folder or file name
+fresh
+mkdir "$T/w/usb" "$T/w/usb2"
+head -c 70000 /dev/urandom >"$T/w/f"
+check '"$PNP" -q --key-out "$T/w/usb" "$T/w/f" && [[ -f "$T/w/f.pnp" && -f "$T/w/usb/f.pnp.key" && ! -e "$T/w/f.pnp.key" ]] &&
+       [[ $(stat -c %a "$T/w/usb/f.pnp.key") == 600 ]] && "$B/xorcheck" "$T/w/f" "$T/w/f.pnp" "$T/w/usb/f.pnp.key"' \
+    "--key-out FOLDER writes FOLDER/FILE.pnp.key (mode 600) and nothing beside the ciphertext"
+check '"$PNP" -q -d -k "$T/w/usb/f.pnp.key" -o "$T/w/back" "$T/w/f.pnp" && cmp -s "$T/w/back" "$T/w/f"' \
+    "a key written with --key-out decrypts with -k"
+check '"$PNP" -q --key-out "$T/w/usb2/mykey" -o "$T/w/g.pnp" "$T/w/f" && [[ -f "$T/w/usb2/mykey" && ! -e "$T/w/g.pnp.key" ]] &&
+       "$B/xorcheck" "$T/w/f" "$T/w/g.pnp" "$T/w/usb2/mykey"' "--key-out FILE writes the key under exactly that name"
+check '! "$PNP" -q --key-out "$T/w/nofolder/" -o "$T/w/h.pnp" "$T/w/f" 2>"$T/err" && grep -q "no such folder" "$T/err" &&
+       [[ ! -e "$T/w/h.pnp" ]] && no_parts' "--key-out to a missing folder is refused, and nothing is written"
+check '! "$PNP" -q --key-out "$T/w/usb" -o "$T/w/i/f.pnp" "$T/w/f" 2>"$T/err" && grep -q "usb/f.pnp.key already exists" "$T/err"' \
+    "--key-out doesn't replace a key already in the folder without -f"
+"$PNP" -q -d --key-out "$T/w/usb" "$T/w/f.pnp" 2>/dev/null
+check '[[ $? == 2 ]]' "--key-out when decrypting is a usage error"
+"$PNP" -q --key-out "$T/w/usb" --key-out "$T/w/usb2" -o "$T/w/j.pnp" "$T/w/f" 2>/dev/null
+check '[[ $? == 1 && ! -e "$T/w/j.pnp" ]]' "--key-out twice without --shares is refused"
+# while pnp waits for the (stalled) source, the key's part is in the --key-out folder and no key part is beside
+# the ciphertext: the key never touches the ciphertext's disk
+fresh
+mkdir "$T/w/usb"
+head -c $((4 << 20)) /dev/urandom >"$T/w/f"
+mkfifo "$T/fifo2"
+( head -c $((1 << 20)) /dev/urandom; exec sleep 300 ) >"$T/fifo2" &
+writer=$!
+PNP_TEST_HWRNG="$T/fifo2" "$PNP" -q --key-out "$T/w/usb" "$T/w/f" 2>/dev/null &
+pid=$!
+want=$((24 + 15 * 65536))
+for _ in $(seq 600); do
+    part="$(find "$T/w/usb" -name '.f.pnp.key.*.pnp-part')"
+    [[ -n "$part" && $(stat -c %s "$part" 2>/dev/null || echo 0) -ge $want ]] && break
+    sleep 0.05
+done
+check '[[ -n "$part" ]] && ! ls -A "$T/w" | grep -q "key"' \
+    "with --key-out, the key is written only in that folder (no key part beside the ciphertext)"
+kill -TERM "$pid"
+wait "$pid" 2>/dev/null
+kill "$writer" 2>/dev/null
+wait "$writer" 2>/dev/null
+check 'no_parts' "stopping it removes the parts in both folders"
+
+# --- --shares: the key split into shares, all needed to decrypt
+fresh
+yes 'the same line, over and over' | head -c 100000 >"$T/w/f"
+check '"$PNP" -q --shares 3 "$T/w/f" && [[ ! -e "$T/w/f.pnp.key" ]] &&
+       for i in 1 2 3; do [[ $(stat -c %s "$T/w/f.pnp.key.$i") == 100026 && $(stat -c %a "$T/w/f.pnp.key.$i") == 600 ]] || exit 1; done' \
+    "--shares 3 writes FILE.pnp.key.1, .2 and .3 (mode 600, each 26 bytes longer than the file) and no whole key"
+check '"$B/xorcheck" "$T/w/f" "$T/w/f.pnp" "$T/w/f.pnp.key.1" "$T/w/f.pnp.key.2" "$T/w/f.pnp.key.3"' \
+    "ciphertext XOR all three shares is the plaintext, and the share headers are right (checked independently)"
+check 'for i in 1 2 3; do [[ $(tail -c +27 "$T/w/f.pnp.key.$i" | gzip -c | wc -c) -gt 100000 ]] || exit 1; done &&
+       ! cmp -s "$T/w/f.pnp.key.1" "$T/w/f.pnp.key.2"' "each share looks random (doesn't compress), and they differ"
+cp "$T/w/f" "$T/w/orig"
+rm "$T/w/f"
+check '"$PNP" -q -d "$T/w/f.pnp" && cmp -s "$T/w/f" "$T/w/orig"' "decrypting finds FILE.pnp.key.1, .2, .3 by itself"
+check '"$PNP" -q -d -k "$T/w/f.pnp.key.3" -k "$T/w/f.pnp.key.1" -k "$T/w/f.pnp.key.2" -o "$T/w/back" "$T/w/f.pnp" &&
+       cmp -s "$T/w/back" "$T/w/orig"' "the shares can be given with -k in any order"
+check '! "$PNP" -q -d -k "$T/w/f.pnp.key.1" -k "$T/w/f.pnp.key.3" -o "$T/w/out" "$T/w/f.pnp" 2>"$T/err" &&
+       grep -q "only 2 of the key.s 3 shares.*missing: 2" "$T/err" && [[ ! -e "$T/w/out" ]] && no_parts' \
+    "an incomplete set of shares is refused, naming the missing one"
+check '! "$PNP" -q -d -k "$T/w/f.pnp.key.2" -o "$T/w/out" "$T/w/f.pnp" 2>/dev/null && [[ ! -e "$T/w/out" ]]' \
+    "one share alone is refused"
+check '! "$PNP" -q -d -k "$T/w/f.pnp.key.1" -k "$T/w/f.pnp.key.1" -k "$T/w/f.pnp.key.2" -o "$T/w/out" "$T/w/f.pnp" 2>"$T/err" &&
+       grep -q "same share" "$T/err"' "the same share given twice is refused"
+mv "$T/w/f.pnp.key.2" "$T/w/s2"
+rm "$T/w/f"
+check '! "$PNP" -q -d "$T/w/f.pnp" 2>"$T/err" && grep -q "all 3 shares" "$T/err" && [[ ! -e "$T/w/f" ]]' \
+    "a share missing from beside the ciphertext is reported"
+mv "$T/w/s2" "$T/w/f.pnp.key.2"
+cp "$T/w/orig" "$T/w/g"
+"$PNP" -q --shares 3 "$T/w/g"
+check '! "$PNP" -q -d -k "$T/w/f.pnp.key.1" -k "$T/w/g.pnp.key.2" -k "$T/w/f.pnp.key.3" -o "$T/w/out" "$T/w/f.pnp" 2>"$T/err" &&
+       grep -q "isn.t the key for" "$T/err"' "a share from another encryption is refused"
+"$PNP" -q -o "$T/w/h.pnp" "$T/w/g"
+check '! "$PNP" -q -d -k "$T/w/f.pnp.key.1" -k "$T/w/h.pnp.key" -o "$T/w/out" "$T/w/f.pnp" 2>"$T/err" &&
+       grep -q "isn.t the key for\|whole key" "$T/err"' "a whole key mixed with shares is refused"
+cp "$T/w/f.pnp.key.3" "$T/w/short3"
+truncate -s 50000 "$T/w/short3"
+check '! "$PNP" -q -d -k "$T/w/f.pnp.key.1" -k "$T/w/f.pnp.key.2" -k "$T/w/short3" -o "$T/w/out" "$T/w/f.pnp" 2>"$T/err" &&
+       grep -q "different sizes" "$T/err"' "a truncated share is refused"
+fresh
+mkdir "$T/w/a" "$T/w/b"
+echo secret >"$T/w/f"
+check '"$PNP" -q --shares 2 --key-out "$T/w/a" --key-out "$T/w/b" "$T/w/f" && [[ -f "$T/w/a/f.pnp.key.1" && -f "$T/w/b/f.pnp.key.2" ]] &&
+       "$B/xorcheck" "$T/w/f" "$T/w/f.pnp" "$T/w/a/f.pnp.key.1" "$T/w/b/f.pnp.key.2"' \
+    "--shares 2 with --key-out twice puts share 1 in the first folder and share 2 in the second"
+check '! "$PNP" -q -f --shares 2 --key-out "$T/w/k" --key-out "$T/w/../w/k" -o "$T/w/x.pnp" "$T/w/f" 2>"$T/err" &&
+       grep -q "written twice" "$T/err" && [[ ! -e "$T/w/k" ]]' "two shares going to the same file are refused, even with -f"
+check '! "$PNP" -q --shares 2 --key-out "$T/w/onefile" -o "$T/w/x.pnp" "$T/w/f" 2>"$T/err" && grep -q "isn.t a folder" "$T/err"' \
+    "--shares with a single --key-out that isn't a folder is refused"
+for bad in 1 17 x; do
+    "$PNP" -q --shares "$bad" -o "$T/w/x.pnp" "$T/w/f" 2>/dev/null
+    check '[[ $? == 2 && ! -e "$T/w/x.pnp" ]]' "--shares $bad is a usage error"
+done
+head -c 60000 /dev/urandom >"$T/w/big"
+head -c 100000 /dev/urandom >"$T/runsout2"
+check '! PNP_TEST_HWRNG="$T/runsout2" "$PNP" -q --shares 2 --key-out "$T/w/a" "$T/w/big" 2>"$T/err" && grep -q "stopped working" "$T/err" &&
+       [[ ! -e "$T/w/big.pnp" && ! -e "$T/w/a/big.pnp.key.1" ]] && no_parts' \
+    "shares take fresh hardware randomness: a source too short for them stops the run and leaves nothing"
+
 # --- wrong or damaged keys
 fresh
 head -c 1000 /dev/urandom >"$T/w/a"

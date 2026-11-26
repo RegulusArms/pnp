@@ -2,6 +2,16 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.3
+
+- **`--key-out PATH` writes the key straight to another folder** (a USB stick, say) or file name, instead of beside
+  the ciphertext. The key never touches the computer's own disk, where a deleted file may stay recoverable on an
+  SSD.
+- **`--shares N` splits the key into N shares** (2 to 16), each one useless alone, all of them needed to decrypt.
+  Like the one-time pad itself, this holds against any amount of computing power. Decrypting finds
+  `FILE.pnp.key.1`, `.2`… by itself, or takes `-k` once per share, and refuses an incomplete set.
+- The README has a new section, "Keeping your keys".
+
 ## 0.1.0-alpha.2
 
 - **The README has the complete install guide.** Adding the repository, checking its key, installing, joining the

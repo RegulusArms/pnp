@@ -39,7 +39,7 @@ int pnp_write_all(int fd, const void *buf, size_t n)
 }
 
 /* dir part of path ("." for a bare name), malloc'd */
-static char *dir_of(const char *path)
+char *pnp_dir_of(const char *path)
 {
     char *copy = strdup(path);
     if (!copy)
@@ -49,7 +49,7 @@ static char *dir_of(const char *path)
     return d;
 }
 
-static char *base_of(const char *path)
+char *pnp_base_of(const char *path)
 {
     char *copy = strdup(path);
     if (!copy)
@@ -64,7 +64,7 @@ int pnp_out_open(struct pnp_out *o, const char *path, mode_t mode, char *err, si
     memset(o, 0, sizeof *o);
     o->fd = -1;
     o->path = strdup(path);
-    char *dir = dir_of(path), *base = base_of(path);
+    char *dir = pnp_dir_of(path), *base = pnp_base_of(path);
     if (!o->path || !dir || !base) {
         snprintf(err, errlen, "out of memory");
         goto fail;
@@ -165,7 +165,7 @@ void pnp_out_discard(struct pnp_out *o)
 
 void pnp_sync_dir(const char *path)
 {
-    char *dir = dir_of(path);
+    char *dir = pnp_dir_of(path);
     if (!dir)
         return;
     int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);

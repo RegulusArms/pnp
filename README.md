@@ -8,7 +8,7 @@
 [![C11, libc only](https://img.shields.io/badge/C11-libc%20only-A8B9CC?logo=c&logoColor=white)](#building-from-source)
 [![License: MIT](https://img.shields.io/github/license/RegulusArms/pnp)](LICENSE)
 
-**Version 0.1.0-alpha.2**: early alpha. See [Installing](#installing).
+**Version 0.1.0-alpha.3**: early alpha. See [Installing](#installing).
 
 A command-line file encryption tool for Debian, Ubuntu, Linux Mint and other Debian-based systems, built to stay
 secure even if P = NP.
@@ -21,10 +21,14 @@ doesn't depend on any problem being hard to compute, so faster computers or new 
 pnp photo.jpg              # writes photo.jpg.pnp (encrypted) and photo.jpg.pnp.key (the key)
 pnp -d photo.jpg.pnp       # uses photo.jpg.pnp.key to write photo.jpg again
 pnp --sources              # which hardware random sources this machine has
+
+pnp --key-out /media/usb photo.jpg      # the key goes straight onto the USB stick, never onto this disk
+pnp -d -k /media/usb/photo.jpg.pnp.key photo.jpg.pnp
+pnp --shares 2 photo.jpg                # the key as two shares, both needed to decrypt
 ```
 
 Keep the `.pnp.key` file secret and separate from the `.pnp` file, and never reuse it. Anyone holding both can
-decrypt the file; without the key, nobody can.
+decrypt the file; without the key, nobody can. See [Keeping your keys](#keeping-your-keys).
 
 The catch: the key is as big as the file, and losing it means losing the file. So from now on you'll need to carry
 an Imperial code cylinder on your belt at all times to keep your keys safe. Uniform sold separately.
@@ -108,8 +112,10 @@ sudo usermod -aG pnp $USER     # then log out and back in
 | Option | Meaning |
 |---|---|
 | `-d`, `--decrypt` | Decrypt instead of encrypting |
-| `-k KEY`, `--key KEY` | The key to decrypt with (default `FILE.pnp.key`) |
+| `-k KEY`, `--key KEY` | The key to decrypt with (default `FILE.pnp.key`, or the shares `FILE.pnp.key.1`, `.2`…). For a key split into shares, give `-k` once per share, in any order |
 | `-o OUT`, `--output OUT` | Where to write: the ciphertext when encrypting (its key goes to `OUT.key`), the plaintext when decrypting |
+| `--key-out PATH` | Write the key straight into the folder `PATH` (as `FILE.pnp.key`), or to the file name `PATH`, instead of beside the ciphertext. With `--shares`: once for all shares (a folder), or once per share |
+| `--shares N` | Write the key as `N` shares (2 to 16) instead of one key file. Every share is needed to decrypt |
 | `-f`, `--force` | Replace files that already exist. Without it, pnp never replaces anything |
 | `-q`, `--quiet` | Don't print which sources made the key, or what was written |
 | `-v`, `--verbose` | List every random source and its state |
@@ -121,6 +127,41 @@ details, and [docs/format.md](docs/format.md) describes the file format.
 
 **pnp doesn't detect tampering.** A one-time pad hides what's in a file but can't tell whether the ciphertext was
 changed: a modified `.pnp` file decrypts to modified data without an error.
+
+## Keeping your keys
+
+A one-time pad moves the whole problem of secrecy onto the key: the ciphertext is safe anywhere, the key has to
+be guarded. Some rules:
+
+- **Guard keys physically, not with more encryption.** An AES-encrypted drive, a password manager or a cloud
+  account is only as strong as the very ciphers P = NP would break. A USB stick in a drawer, a safe or a bank
+  deposit box doesn't depend on any of that.
+- **Keep the ciphertext anywhere and the key offline.** Never store a key with its ciphertext, in cloud storage,
+  or in email.
+- **Keep keys off the computer's SSD.** A deleted file on an SSD may stay recoverable, because the drive moves data
+  around internally and can't be relied on to overwrite it. Write the key straight to removable media with
+  `--key-out`, so it never touches the internal disk:
+
+  ```
+  pnp --key-out /media/$USER/KEYS photo.jpg
+  ```
+
+- **Keep two or more copies of a key in different places**, and for long-term archives on more than one kind of
+  storage (USB sticks, SD cards, optical discs), since all of them fail eventually. Keep a checksum list
+  (`sha256sum *.key > SHA256SUMS`) beside each copy and check it now and then (`sha256sum -c SHA256SUMS`) to catch
+  corruption early.
+- **Or split the key into shares**, so that no single place holds it. `--shares N` writes `N` share files: each
+  one alone, or any `N`−1 together, is just random noise, and all `N` are needed to decrypt. Like the pad itself,
+  this holds against any amount of computing power. Put each share in a different place, for example:
+
+  ```
+  pnp --shares 2 --key-out /media/$USER/STICK1 --key-out /media/$USER/STICK2 photo.jpg
+  pnp -d -k /media/$USER/STICK1/photo.jpg.pnp.key.1 -k /media/$USER/STICK2/photo.jpg.pnp.key.2 photo.jpg.pnp
+  ```
+
+  Losing any one share loses the file, so back up each share as you would a key.
+- **Destroying every copy of a key makes the file unreadable for good**, which can be what you want. Remember that
+  overwriting may not destroy data on SSDs and flash media: physically destroy the medium if it matters.
 
 ## Building from source
 

@@ -23,6 +23,9 @@ int pnp_out_commit(struct pnp_out *o, int replace, char *err, size_t errlen);
 void pnp_out_discard(struct pnp_out *o);
 /* Removes the placed file again (undoing a commit whose partner output failed). */
 void pnp_out_unplace(struct pnp_out *o);
+/* The folder part of path ("." for a bare name) and its last part, malloc'd (NULL when out of memory). */
+char *pnp_dir_of(const char *path);
+char *pnp_base_of(const char *path);
 /* fsyncs the folder holding path, so the renames survive a crash. */
 void pnp_sync_dir(const char *path);
 

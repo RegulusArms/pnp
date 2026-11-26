@@ -8,13 +8,17 @@ pnp \- one-time pad file encryption that stays secure even if P = NP
 .RB [ \-v ]
 .RB [ \-o
 .IR OUT ]
+.RB [ \-\-key\-out
+.IR PATH ]...
+.RB [ \-\-shares
+.IR N ]
 .I FILE
 .br
 .B pnp \-d
 .RB [ \-f ]
 .RB [ \-q ]
 .RB [ \-k
-.IR KEY ]
+.IR KEY ]...
 .RB [ \-o
 .IR OUT ]
 .I FILE.pnp
@@ -54,12 +58,40 @@ Decrypt instead of encrypting.
 .TP
 .BR \-k ", " \-\-key " \fIKEY\fR"
 The key to decrypt with. Default:
-.IR FILE.pnp.key .
+.IR FILE.pnp.key ,
+or if that doesn't exist, the shares
+.IR FILE.pnp.key.1 ,
+.IR FILE.pnp.key.2 ...
+(share 1 says how many). For a key split with
+.BR \-\-shares ,
+give
+.B \-k
+once per share, in any order; all of them are needed.
 .TP
 .BR \-o ", " \-\-output " \fIOUT\fR"
 Where to write. Encrypting: the ciphertext (the key goes to
 .IR OUT.key ).
 Decrypting: the plaintext (needed when the ciphertext's name doesn't end in .pnp).
+.TP
+.BI \-\-key\-out " PATH"
+Write the key straight into the folder
+.I PATH
+(under its usual name, such as
+.IR FILE.pnp.key ),
+or to the file name
+.IR PATH ,
+instead of beside the ciphertext. The key is built in that folder from the start, so it never touches the
+ciphertext's disk: use it to write keys directly to removable media. With
+.BR \-\-shares ,
+give it once (a folder, for all shares) or once per share (share 1 to the first, and so on).
+.TP
+.BI \-\-shares " N"
+Write the key as
+.I N
+shares (2 to 16) instead of one key file:
+.IR FILE.pnp.key.1 " to " FILE.pnp.key.N .
+Shares 1 to N\-1 are fresh pads from the hardware sources and share N is the pad XOR all of them, so any N\-1
+shares reveal nothing about the key, and all N are needed to decrypt. Losing one share loses the file.
 .TP
 .BR \-f ", " \-\-force
 Replace output files that already exist. Without it,
@@ -99,7 +131,7 @@ key is created readable by its owner only (mode 600), as is a decrypted file.
 .PP
 With
 .BR \-f ,
-if the ciphertext can't be saved after its key was, the key is removed again; an older key it replaced is then gone.
+if the ciphertext can't be saved after its key (or shares) were, they are removed again; an older key it replaced is then gone.
 .PP
 A one-time pad hides the contents but doesn't detect changes: a modified ciphertext decrypts to modified data without
 any error. The ciphertext and key do record which encryption they belong to, so a wrong key is refused.
