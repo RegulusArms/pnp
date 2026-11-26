@@ -3,12 +3,26 @@
 # round-trips when the machine has a hardware source, and removing then purging it leaves nothing behind.
 # Needs root and a throwaway system (CI runs it in fresh containers). Locally:
 #   docker run --rm -v "$PWD":/src:ro mirror.gcr.io/library/debian:13 /src/tests/check_package.sh /src/build/pnp_….deb
+# With --apt REPO SUITE it installs the package from a suite of a copy of the apt repository (gh-pages) instead, as a
+# user's sources file would, checking first that the suite is there and signed with the repository's key (REPO/pnp.asc).
 set -uo pipefail
-PKG="$(realpath "${1:?usage: check_package.sh pnp_VERSION_ARCH.deb}")"
+usage="usage: check_package.sh pnp_VERSION_ARCH.deb | --apt REPO SUITE"
 fails=0
 check() { if eval "$1"; then echo "PASS $2"; else echo "FAIL $2"; fails=$((fails + 1)); fi; }
 export DEBIAN_FRONTEND=noninteractive
+if [[ "${1:-}" == --apt ]]; then
+    REPO="$(realpath "${2:?$usage}")" SUITE="${3:?$usage}" PKG=pnp
+    printf 'Types: deb\nURIs: file:%s\nSuites: %s\nComponents: main\nSigned-By: %s/pnp.asc\n' "$REPO" "$SUITE" "$REPO" \
+        >/etc/apt/sources.list.d/pnp.sources
+else
+    PKG="$(realpath "${1:?$usage}")"
+fi
 apt-get update >/tmp/update.log 2>&1
+if [[ -n "${SUITE:-}" ]]; then
+    check '{ ! grep -E "^(W|E|Err):" /tmp/update.log && apt-cache policy pnp | grep -q "file:$REPO $SUITE/main"; } ||
+           { cat /tmp/update.log; false; }' \
+        "the repository's $SUITE suite is there, signed with its key, and has the package"
+fi
 
 check 'apt-get install -y -qq "$PKG" >/tmp/install.log 2>&1 || { tail -20 /tmp/install.log; false; }' \
     "the package installs, with its dependencies"

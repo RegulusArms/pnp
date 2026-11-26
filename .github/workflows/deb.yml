@@ -1,0 +1,240 @@
+# Tests pnp, builds its .deb, checks the package on every supported release, and publishes it.
+#   push to DEV           → replaces the "dev-latest" pre-release, and publishes to the apt "dev" suite
+#   pull request to main  → tests and build only (the .deb is kept as a workflow artifact)
+#   push to main (merge)  → release v<VERSION>, and publishes to the apt "stable" suite, unless that tag exists already
+# A failing test means no package; a package failing its install check on any release isn't published to apt.
+# A push or pull request that only changes Markdown files (*.md) doesn't start it at all.
+#
+# One .deb for every release: it's built on the oldest supported one (ubuntu:22.04, glibc 2.34+), and glibc is
+# backward compatible, so it installs on every newer release. The "package" and "apt-check" matrices are the
+# releases it's checked on.
+#
+# The apt repo is the gh-pages branch, served by GitHub Pages at https://pnp.regulusarms.com, signed with the
+# APT_GPG_PRIVATE_KEY secret (fingerprint in .github/apt/distributions). Its suites, public key and page come from
+# .github/apt/ with each build. The apt job force-pushes gh-pages as a single commit, so old .debs don't build up.
+name: Build .deb
+
+on:
+  push:
+    branches: [DEV, main]
+    paths-ignore: ['**.md']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:   # run by hand from the Actions tab, whatever changed
+
+permissions:
+  contents: write   # to create releases and tags, and push gh-pages
+
+env:
+  BUILD_IMAGE: mirror.gcr.io/library/ubuntu:22.04   # the oldest supported release: the .deb is built here
+  PAGES_DOMAIN: pnp.regulusarms.com
+
+concurrency:
+  group: deb-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}   # never stop a release halfway
+
+jobs:
+  test:
+    # the test suite as a normal user (some checks need file permissions to apply), with warnings as errors, on the
+    # build release and the newest ones (newer compilers warn about more). Through Google's mirror of Docker Hub:
+    # Docker Hub limits anonymous pulls per IP address, and GitHub's runners share theirs.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:26.04", "debian:13"]
+    container: mirror.gcr.io/library/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build tools
+        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential
+
+      - name: Test
+        run: |
+          useradd -m tester
+          chown -R tester .
+          su tester -c "make WERROR=1 test"
+
+  deb:
+    needs: test
+    runs-on: ubuntu-24.04
+    container: mirror.gcr.io/library/ubuntu:22.04   # = BUILD_IMAGE (env can't be used here)
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version
+        id: ver
+        shell: bash
+        run: |
+          version=$(cat VERSION)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$ ]] || { echo "::error::VERSION isn't like 0.1.0 or 0.1.0-alpha.1: $version"; exit 1; }
+          deb="${version//-/\~}"
+          # dev builds sort after the version's release and before the next: 0.1.0~alpha.1+dev42.g1a2b3c4
+          [[ "$GITHUB_REF" == refs/heads/main ]] || deb="$deb+dev${GITHUB_RUN_NUMBER}.g${GITHUB_SHA::7}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "deb=$deb" >> "$GITHUB_OUTPUT"
+
+      - name: Install build tools
+        run: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential
+
+      - name: Build
+        run: |
+          useradd -m builder
+          chown -R builder .
+          su builder -c "make WERROR=1 deb DEB_VERSION='${{ steps.ver.outputs.deb }}' SOURCE_DATE_EPOCH=$(git log -1 --format=%ct 2>/dev/null || date +%s)"
+          dpkg-deb -I build/*.deb
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pnp-deb
+          path: build/*.deb
+
+  package:
+    # the .deb installed on clean systems of every supported release: it installs, works as a normal user, and
+    # removes cleanly (tests/check_package.sh)
+    needs: deb
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "ubuntu:26.04", "debian:12", "debian:13"]
+    container: mirror.gcr.io/library/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: pnp-deb
+          path: debs
+
+      - name: Install and check the package
+        run: bash tests/check_package.sh debs/*.deb
+
+  publish:
+    # the GitHub release (dev-latest on DEV, v<VERSION> on main); decides the apt channel
+    needs: [deb, package]
+    runs-on: ubuntu-24.04
+    outputs:
+      channel: ${{ steps.dev.outcome == 'success' && 'dev' || steps.release.outputs.released == 'true' && 'stable' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: pnp-deb
+          path: debs
+
+      - name: Replace the dev pre-release
+        id: dev
+        if: github.event_name == 'push' && github.ref == 'refs/heads/DEV'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.deb.outputs.version }}
+        run: |
+          gh release delete dev-latest --cleanup-tag --yes || true
+          gh release create dev-latest debs/*.deb --prerelease --target "$GITHUB_SHA" \
+            --title "Development build ($VERSION, run $GITHUB_RUN_NUMBER)" \
+            --notes "Latest build of the DEV branch, commit $GITHUB_SHA. Replaced on every push to DEV. One .deb for Debian 12+, Ubuntu 22.04+ and Linux Mint 21+."
+
+      - name: Release
+        id: release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.deb.outputs.version }}
+        run: |
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1 || git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "::warning::$TAG exists already, so no release was made. Raise VERSION for a new one."
+            exit 0
+          fi
+          prerelease=()
+          [[ "$TAG" == *-* ]] && prerelease=(--prerelease)   # 0.1.0-alpha.1, -beta.1…
+          gh release create "$TAG" debs/*.deb "${prerelease[@]}" --target "$GITHUB_SHA" \
+            --title "pnp $VERSION" --generate-notes
+          echo "released=true" >> "$GITHUB_OUTPUT"
+
+  apt:
+    needs: [deb, publish]
+    if: needs.publish.outputs.channel != ''
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: apt-repo   # one update of gh-pages at a time, DEV and main alike
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7   # .github/apt: the suites, the public key and the page
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: pnp-deb
+          path: debs
+
+      - name: Get gh-pages
+        # the published repo; on the very first run there's no gh-pages yet, so start an empty one
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
+            git clone --depth 1 --branch gh-pages "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" repo
+          else
+            mkdir repo && git -C repo init -q -b gh-pages
+            git -C repo remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          fi
+
+      - name: Use Ubuntu's own archive
+        # the runners' apt points at Azure's mirror, which has been very slow
+        run: grep -rl azure.archive.ubuntu.com /etc/apt | xargs -r sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g'
+
+      - name: Add the package
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          CHANNEL: ${{ needs.publish.outputs.channel }}
+        run: |
+          [[ -n "$APT_GPG_PRIVATE_KEY" ]] || { echo "::error::The APT_GPG_PRIVATE_KEY secret isn't set"; exit 1; }
+          sudo apt-get update && sudo apt-get install -y reprepro
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          mkdir -p repo/conf
+          cp .github/apt/distributions repo/conf/distributions
+          cp .github/apt/pnp.asc repo/pnp.asc
+          # the page with each release (so it matches main's README), and on the first run so the site isn't empty
+          if [[ "$CHANNEL" == stable || ! -f repo/index.html ]]; then cp .github/apt/index.html repo/index.html; fi
+          echo "$PAGES_DOMAIN" > repo/CNAME   # GitHub Pages' custom domain: must be in every push
+          touch repo/.nojekyll
+          # replaces the suite's previous version; reprepro deletes pool files nothing refers to any more
+          reprepro -b repo includedeb "$CHANNEL" debs/*.deb
+          reprepro -b repo ls pnp
+
+      - name: Publish
+        # one commit, force-pushed: old .debs would otherwise stay in the branch's history for good
+        run: |
+          cd repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q --orphan publish
+          git add -A
+          git commit -q -m "apt repo: ${{ needs.publish.outputs.channel }} ${{ needs.deb.outputs.version }} (run $GITHUB_RUN_NUMBER)"
+          git push --force origin publish:gh-pages
+
+  apt-check:
+    # what the apt repo serves now, installed from the channel's suite on clean systems: the suite is there, signed
+    # with the published key, and its package installs and works (tests/check_package.sh --apt). From a copy of
+    # gh-pages (file:), so it doesn't wait for GitHub Pages to deploy.
+    needs: [publish, apt]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "ubuntu:26.04", "debian:12", "debian:13"]
+    container: mirror.gcr.io/library/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/checkout@v7
+        with:
+          ref: gh-pages
+          path: repo
+
+      - name: Install and check the package from the suite
+        run: bash tests/check_package.sh --apt repo "${{ needs.publish.outputs.channel }}"

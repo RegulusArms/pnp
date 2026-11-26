@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pnp: install</title>
+<meta name="description" content="pnp: one-time pad file encryption that stays secure even if P = NP. Install it from its apt repository.">
+<style>
+  :root {
+    --bg: #fbfbf9; --fg: #1d1f21; --muted: #5c6166; --line: #e2e2dc; --code-bg: #f1f1ec; --accent: #9a3412;
+    --warn-bg: #fff7ed; --warn-line: #fdba74;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15171a; --fg: #e6e6e3; --muted: #9aa0a6; --line: #2c3036; --code-bg: #1e2126; --accent: #fb923c;
+            --warn-bg: #2a1d12; --warn-line: #9a3412; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 64px; }
+  h1 { font-size: 2.2rem; margin: 0 0 4px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.25rem; margin: 40px 0 8px; }
+  .tagline { color: var(--muted); margin: 0 0 32px; font-size: 1.1rem; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto;
+        font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.92em; }
+  p code, li code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  a { color: var(--accent); }
+  .note { background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; padding: 12px 16px; }
+  .fpr { word-break: break-all; }
+  footer { margin-top: 48px; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>pnp</h1>
+  <p class="tagline">One-time pad file encryption that stays secure even if P = NP.</p>
+
+  <p>pnp encrypts any file with a key of truly random bytes as long as the file, read from your machine's hardware
+  random number generators. A one-time pad doesn't rely on any problem being hard to compute, so no amount of
+  computing power can break it.</p>
+<pre>pnp photo.jpg            # writes photo.jpg.pnp and its key photo.jpg.pnp.key
+pnp -d photo.jpg.pnp     # gives back photo.jpg</pre>
+
+  <h2>Install</h2>
+  <p>For Debian 12 and newer, Ubuntu 22.04 and newer, and systems based on them (Linux Mint 21+, Kubuntu, KDE neon),
+  on 64-bit PCs (amd64). One package works on all of them.</p>
+<pre>sudo install -d -m 0755 /etc/apt/keyrings
+sudo wget -qO /etc/apt/keyrings/pnp.asc https://pnp.regulusarms.com/pnp.asc
+printf 'Types: deb\nURIs: https://pnp.regulusarms.com/\nSuites: stable\nComponents: main\nSigned-By: /etc/apt/keyrings/pnp.asc\n' \
+  | sudo tee /etc/apt/sources.list.d/pnp.sources
+sudo apt update
+sudo apt install pnp</pre>
+  <p>Check the key you downloaded before trusting it: <code>gpg --show-keys /etc/apt/keyrings/pnp.asc</code> should
+  show the fingerprint</p>
+<pre class="fpr">B605 C24B 0B68 BEF1 3104  D104 8A29 1737 19C4 4365</pre>
+  <p>For development builds, use <code>Suites: dev</code> instead of <code>stable</code>.</p>
+
+  <h2>Let pnp read your hardware random generator</h2>
+  <p>Only root can read <code>/dev/hwrng</code> by default. The package adds a <code>pnp</code> group that can; join
+  it once, then log out and back in:</p>
+<pre>sudo usermod -aG pnp $USER</pre>
+  <p><code>pnp --sources</code> lists the hardware sources it found. pnp also uses the RDSEED instruction of Intel and
+  AMD CPUs, which needs no setup. If no hardware source works, pnp refuses to encrypt.</p>
+
+  <h2>If P = NP, build from source</h2>
+  <div class="note">
+    <p>pnp's encryption doesn't depend on P &ne; NP. <strong>The way you get pnp does.</strong> This repository is
+    signed with an RSA key, and HTTPS and git rely on problems being hard to compute. If P = NP is proven with a
+    practical algorithm, all of these could be forged, and apt would install a fake package.</p>
+    <p>No signature scheme is known to survive that. Until a P = NP-resistant way to sign and deliver software
+    exists, the safest way to get pnp is to get its source from more than one place, <strong>read it</strong> (it's
+    small, plain C with no libraries), and build it yourself: <code>make</code>, then <code>sudo make install</code>.
+    Files you encrypted with an honest copy of pnp stay safe either way.</p>
+  </div>
+
+  <footer>
+    Source, documentation and issues: <a href="https://github.com/RegulusArms/pnp">github.com/RegulusArms/pnp</a> ·
+    MIT license
+  </footer>
+</main>
+</body>
+</html>

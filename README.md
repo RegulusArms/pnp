@@ -21,6 +21,23 @@ decrypt the file; without the key, nobody can.
 The catch: the key is as big as the file, and losing it means losing the file. So from now on you'll need to carry
 an Imperial code cylinder on your belt at all times to keep your keys safe. Uniform sold separately.
 
+## Installing
+
+From the apt repository, on Debian 12+, Ubuntu 22.04+ and systems based on them (Linux Mint 21+, Kubuntu, KDE
+neon), 64-bit PCs. One package works on all of them. (The repository goes live with the first release; read the
+disclaimer below first.)
+
+```
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo wget -qO /etc/apt/keyrings/pnp.asc https://pnp.regulusarms.com/pnp.asc
+printf 'Types: deb\nURIs: https://pnp.regulusarms.com/\nSuites: stable\nComponents: main\nSigned-By: /etc/apt/keyrings/pnp.asc\n' \
+  | sudo tee /etc/apt/sources.list.d/pnp.sources
+sudo apt update && sudo apt install pnp
+```
+
+`gpg --show-keys /etc/apt/keyrings/pnp.asc` should show the fingerprint
+`B605 C24B 0B68 BEF1 3104  D104 8A29 1737 19C4 4365`. For development builds, use `Suites: dev`.
+
 ## Where the randomness comes from
 
 A one-time pad is only unbreakable if its key is truly random. pnp reads the hardware random sources directly:
