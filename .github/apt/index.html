@@ -65,6 +65,14 @@ sudo apt install pnp</pre>
   <p><code>pnp --sources</code> lists the hardware sources it found. pnp also uses the RDSEED instruction of Intel and
   AMD CPUs, which needs no setup. If no hardware source works, pnp refuses to encrypt.</p>
 
+  <h2>Locking a key with a passphrase</h2>
+  <p><code>pnp --protect</code> locks the key file with a passphrase, and the guide in the source repository shows how
+  to keep keys on an encrypted drive (LUKS). Both use ordinary, computationally secure cryptography: they stop common
+  criminals who steal a key, not a state with real resources, and they're no part of the P = NP guarantee. What
+  stops a state is keeping the key physically out of reach, or splitting it into shares kept in different places
+  (<code>--shares</code>). <a href="p-np.html">How long would a top GPU rack take to break a locked key if
+  P = NP?</a></p>
+
   <h2>If P = NP, build from source</h2>
   <div class="note">
     <p>pnp's encryption doesn't depend on P &ne; NP. <strong>The way you get pnp does.</strong> This repository is

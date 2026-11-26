@@ -8,7 +8,7 @@
 [![C11, libc only](https://img.shields.io/badge/C11-libc%20only-A8B9CC?logo=c&logoColor=white)](#building-from-source)
 [![License: MIT](https://img.shields.io/github/license/RegulusArms/pnp)](LICENSE)
 
-**Version 0.1.0-alpha.6**: early alpha. See [Installing](#installing).
+**Version 0.1.0-alpha.7**: early alpha. See [Installing](#installing).
 
 A command-line file encryption tool for Debian, Ubuntu, Linux Mint and other Debian-based systems, built to stay
 secure even if P = NP.
@@ -298,6 +298,17 @@ result encrypts the key with ChaCha20. Its job is to make guessing expensive: ea
 memory and several seconds, so trying passphrases by the million on graphics cards isn't practical. That's a real
 obstacle for a thief or a casual attacker, and none at all for someone who can break these algorithms. If they
 did, they'd be left holding the plain key, exactly as without `--protect`: the one-time pad inside is unchanged.
+
+**Who it stops: common criminals, not the Galactic Federation.** With a generated passphrase, and the key on an
+encrypted drive ([docs/code-cylinder.md](docs/code-cylinder.md)), a stolen key is worthless to a thief: today
+nobody, states included, can guess a 7-word passphrase at a gigabyte per guess. But if P = NP comes with a
+practical algorithm, the attacker doesn't even need the passphrase. With the ciphertext as well as the locked key,
+they can search for the 256-bit ChaCha20 key directly, and checking a guess there costs one ChaCha20 block, with
+no memory-hard hashing in it, whatever `--kdf-memory` was. How long that takes depends only on how good their
+algorithm is: a criminal with one GPU rack is still kept out unless it's very good, a state with thousands of racks
+isn't. [How long would a top GPU rack take?](https://pnp.regulusarms.com/p-np.html) What keeps a state out, P = NP
+or not, is the same as without `--protect`: the key out of their reach, or split into shares kept in different
+places (`--shares`, which works with `--protect`).
 
 - **The passphrase is what matters most.** Hashing slows each guess, but a short or common passphrase is still
   found quickly. `--gen-passphrase` picks words from the [EFF's list of 7776](https://www.eff.org/dice) with the

@@ -2,6 +2,15 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.7
+
+- **A new page on the website: [if P = NP](https://pnp.regulusarms.com/p-np.html).** Pick how good a P = NP
+  algorithm is and how many GPU racks an attacker has, and see how long a key locked with `--protect` would hold
+  out at each memory setting. The install page links to it.
+- **The docs say plainly who `--protect` and an encrypted key drive stop:** common criminals, not a state with
+  real resources. If P = NP, the lock's ChaCha20 key can be searched directly, so the memory setting doesn't
+  help; physical custody and `--shares` do. The key drive guide now sets the drive up with LUKS encryption.
+
 ## 0.1.0-alpha.6
 
 - **`pnp --verify FILE.pnp`** checks a ciphertext against its key or shares (that they belong together, their

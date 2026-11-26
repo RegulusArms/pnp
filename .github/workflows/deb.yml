@@ -300,8 +300,11 @@ jobs:
           mkdir -p repo/conf
           cp .github/apt/distributions repo/conf/distributions
           cp .github/apt/pnp.asc repo/pnp.asc
-          # the page with each release (so it matches main's README), and on the first run so the site isn't empty
-          if [[ "$CHANNEL" == stable || ! -f repo/index.html ]]; then cp .github/apt/index.html repo/index.html; fi
+          # the pages with each release (so they match main's README), and whenever one is missing (the first run, or
+          # a page added on DEV) so the site is never without it
+          for page in index.html p-np.html; do
+            if [[ "$CHANNEL" == stable || ! -f "repo/$page" ]]; then cp ".github/apt/$page" "repo/$page"; fi
+          done
           echo "$PAGES_DOMAIN" > repo/CNAME   # GitHub Pages' custom domain: must be in every push
           touch repo/.nojekyll
           # replaces the suite's previous version; reprepro deletes pool files nothing refers to any more

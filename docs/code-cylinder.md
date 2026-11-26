@@ -81,6 +81,17 @@ it's one more program to trust. The steps below use LUKS. Either way, don't coun
 each key file wherever it goes, including while the drive is unlocked or if a key is copied off it. You can use
 both. Give them different passphrases.
 
+**Who the two locks stop: common criminals, not the Galactic Federation.** Someone who steals or finds the drive
+has to crack the drive's passphrase, and then each key's, at about a gigabyte of memory and seconds per guess
+for both. With generated passphrases nobody can do that today, states included. If P = NP comes with a practical
+algorithm, though, both locks fall to whoever can afford enough computing for it: neither LUKS's AES key nor
+`--protect`'s ChaCha20 key needs the passphrase to be found, and checking a guessed key is a tiny job. A thief
+with a rack of GPUs is still kept out unless the algorithm is very good; a state with thousands of racks isn't
+([how long would it take?](https://pnp.regulusarms.com/p-np.html)). So the locks are for the drive that's lost,
+stolen or copied by an ordinary criminal. Against a state, what counts is that the drive never leaves your
+custody, and that keys you must keep from a state are split into shares on drives in different places (below):
+a set missing one share tells any attacker nothing, however much computing they have.
+
 ## Setting it up
 
 This erases everything on the drive. **Check the device name twice:** choosing the wrong one wipes the wrong disk.
