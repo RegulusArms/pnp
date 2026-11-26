@@ -8,6 +8,11 @@
 
 #define PNP_BALLOON_BLOCK 64 /* bytes: one BLAKE2b-512 output */
 
+/* Called now and then during the hashes, with the phase ("Balloon", "Argon2id") and how far it is: done steps of
+ * total. Always from the calling thread. NULL (the default): no calls. */
+typedef void (*pnp_kdf_progress_fn)(const char *phase, uint64_t done, uint64_t total);
+void pnp_kdf_set_progress(pnp_kdf_progress_fn fn);
+
 /* Balloon hashing with BLAKE2b-512 and delta = 3: s_cost blocks of 64 bytes (>= 2), t_cost rounds (>= 1). Writes
  * 64 bytes. Returns 0, or -1 if the memory can't be had or the costs are out of range. */
 int pnp_balloon(uint8_t out[PNP_BALLOON_BLOCK], const uint8_t *pwd, size_t pwdlen, const uint8_t *salt,

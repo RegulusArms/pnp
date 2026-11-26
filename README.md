@@ -187,9 +187,12 @@ computationally secure, as their own sections explain.
 | `--passphrase-file FILE` | Read the passphrase from the first line of `FILE` instead of asking (for scripts). Anyone who can read that file has the passphrase |
 | `--gen-passphrase[=WORDS]` | Print a random passphrase of 7 words (or `WORDS`, 5 to 20) and exit |
 | `-f`, `--force` | Replace files that already exist. Without it, pnp never replaces anything |
-| `-q`, `--quiet` | Don't print which sources made the key, or what was written |
+| `-q`, `--quiet` | Don't print which sources made the key, what was written, notes, or the progress line |
 | `-v`, `--verbose` | List every random source and its state |
 | `--sources` | List the hardware random sources and exit |
+
+On a terminal, pnp shows a progress line for each file (and for `--protect`'s passphrase hashing): how far along
+it is, how fast, and how long is left. A slow hardware random source can make a large file take hours.
 
 pnp writes each output under a hidden temporary name and renames it into place only once it's complete. A failure,
 a full disk or Ctrl-C never leaves half a file behind. The key is created readable by you only. `man pnp` has the

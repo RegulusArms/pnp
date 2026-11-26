@@ -5,7 +5,7 @@
 # and PNP_TEST_NO_RDSEED turns RDSEED off (src/rng.c), so they give the same results on every machine, with or
 # without hardware random sources; PNP_TEST_VM says whether to act as a virtual machine (src/rng.c);
 # PNP_TEST_MEMINFO replaces /proc/meminfo (src/protect.c); PNP_TEST_MEDIA replaces /media/$USER and PNP_TEST_FDS lists
-# the files still open on quitting (src/tui.c). They don't touch the real /dev/hwrng or drives. PNP_SANITIZE=1 (make
+# the files still open on quitting (src/tui.c); PNP_TEST_PROGRESS draws the progress line at once (src/progress.c). They don't touch the real /dev/hwrng or drives. PNP_SANITIZE=1 (make
 # sanitize) skips the one check AddressSanitizer makes meaningless.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -489,6 +489,25 @@ rm -rf "$T/tw" "$T/media" && mkdir -p "$T/tw" "$T/media/KEYS" && echo x >"$T/tw/
     TERM=xterm PNP_TEST_MEDIA="$T/media" PNP_TEST_FDS="$T/fds" script -qec "$PNP" "$T/tui.out" >/dev/null 2>&1)
 check '[[ -f "$T/tw/a.txt.pnp" && -f "$T/tw/b.txt.pnp" && -s "$T/fds" ]] && ! grep -q "$T/rng" "$T/fds"' \
     "interactive: after encrypting two files, no random source is left open"
+
+# --- the progress line: on a terminal only (PNP_TEST_PROGRESS draws it from the start, for small test files)
+fresh
+head -c $((1 << 20)) /dev/urandom >"$T/w/f" && cp "$T/w/f" "$T/w/orig"
+(cd "$T/w" && TERM=xterm PNP_TEST_PROGRESS=1 script -qec "$PNP f" "$T/pty.out" >/dev/null 2>&1)
+check 'grep -q "encrypting f .*100%  1.0 MiB of 1.0 MiB" "$T/pty.out" && [[ -f "$T/w/f.pnp" ]]' \
+    "on a terminal, encrypting shows a progress line up to 100%"
+rm "$T/w/f"
+(cd "$T/w" && TERM=xterm PNP_TEST_PROGRESS=1 script -qec "$PNP -d f.pnp" "$T/pty.out" >/dev/null 2>&1)
+check 'grep -q "decrypting f.pnp .*100%" "$T/pty.out" && cmp -s "$T/w/f" "$T/w/orig"' \
+    "on a terminal, decrypting shows a progress line too"
+(cd "$T/w" && TERM=xterm PNP_TEST_PROGRESS=1 script -qec "$PNP -q -f f" "$T/pty.out" >/dev/null 2>&1)
+PNP_TEST_PROGRESS=1 "$PNP" -f "$T/w/f" 2>"$T/err"
+check '! grep -q "%" "$T/pty.out" && ! grep -q "%" "$T/err"' "no progress line with -q, or when stderr isn't a terminal"
+(cd "$T/w" && TERM=xterm PNP_TEST_PROGRESS=1 script -qec "$PNP -f --protect --kdf-memory 8 --passphrase-file $T/pass f" \
+    "$T/pty.out" >/dev/null 2>&1)
+check 'grep -q "hashing the passphrase: Balloon .*100%" "$T/pty.out" &&
+       grep -q "hashing the passphrase: Argon2id .*100%" "$T/pty.out"' \
+    "--protect shows the passphrase hashes' progress (Balloon, then Argon2id)"
 
 # --- the shipped binary has no test hooks
 check 'grep -qa PNP_TEST_HWRNG "$B/pnp-test" && ! grep -qa PNP_TEST_ "$B/pnp"' \

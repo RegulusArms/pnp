@@ -17,6 +17,16 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+static pnp_kdf_progress_fn progress_fn;
+
+void pnp_kdf_set_progress(pnp_kdf_progress_fn fn) { progress_fn = fn; }
+
+static void report(const char *phase, uint64_t done, uint64_t total)
+{
+    if (progress_fn)
+        progress_fn(phase, done, total);
+}
+
 /* the big buffers: mmap'd (so they go back to the system at once), kept out of core dumps, wiped when done */
 static void *big_alloc(size_t n)
 {
@@ -79,11 +89,19 @@ int pnp_balloon(uint8_t out[PNP_BALLOON_BLOCK], const uint8_t *pwd, size_t pwdle
     uint64_t cnt = 0;
     uint8_t idx_in[64 + 24], idx[PNP_BALLOON_BLOCK];
     memcpy(idx_in, salt, saltlen);
+    /* progress in block steps: s_cost to expand, then s_cost per round */
+    uint64_t steps = s_cost * (1 + (uint64_t)t_cost);
+    report("Balloon", 0, steps);
     bhash(BLK(0), cnt++, pwd, pwdlen, salt, saltlen);
-    for (uint64_t m = 1; m < s_cost; m++)
+    for (uint64_t m = 1; m < s_cost; m++) {
         bhash(BLK(m), cnt++, BLK(m - 1), PNP_BALLOON_BLOCK, NULL, 0);
+        if (m % 4096 == 0)
+            report("Balloon", m, steps);
+    }
     for (uint32_t t = 0; t < t_cost; t++) {
         for (uint64_t m = 0; m < s_cost; m++) {
+            if (m % 4096 == 0)
+                report("Balloon", s_cost * (1 + (uint64_t)t) + m, steps);
             bhash(BLK(m), cnt++, BLK((m + s_cost - 1) % s_cost), PNP_BALLOON_BLOCK, BLK(m), PNP_BALLOON_BLOCK);
             for (uint64_t i = 0; i < 3; i++) {
                 le64(idx_in + saltlen, t);
@@ -97,6 +115,7 @@ int pnp_balloon(uint8_t out[PNP_BALLOON_BLOCK], const uint8_t *pwd, size_t pwdle
             }
         }
     }
+    report("Balloon", steps, steps);
     memcpy(out, BLK(s_cost - 1), PNP_BALLOON_BLOCK);
 #undef BLK
     big_free(buf, len);
@@ -232,7 +251,8 @@ static void next_addresses(struct block *addr, struct block *in, const struct bl
     fill_block(zero, addr, addr, 0);
 }
 
-static void fill_segment(const struct argon2 *a, uint32_t pass, uint32_t lane, uint32_t slice)
+/* report: lane 0, on the calling thread, stands for every lane's progress (they run in step) */
+static void fill_segment(const struct argon2 *a, uint32_t pass, uint32_t lane, uint32_t slice, int report_it)
 {
     /* Argon2id: the first half of the first pass picks blocks independently of the data (as Argon2i, resisting
      * side channels), the rest from the data (as Argon2d, resisting time-memory trade-offs) */
@@ -267,6 +287,8 @@ static void fill_segment(const struct argon2 *a, uint32_t pass, uint32_t lane, u
         }
         uint32_t ref_lane = pass == 0 && slice == 0 ? lane : (uint32_t)((rnd >> 32) % a->lanes);
         uint32_t idx = ref_index(a, pass, slice, i, (uint32_t)rnd, ref_lane == lane);
+        if (report_it && i % 4096 == 0)
+            report("Argon2id", ((uint64_t)pass * 4 + slice) * a->seg + i, (uint64_t)a->passes * 4 * a->seg);
         fill_block(&a->mem[prev], &a->mem[(size_t)ref_lane * a->q + idx], &a->mem[cur], pass != 0);
     }
     explicit_bzero(&addr, sizeof addr);
@@ -282,7 +304,7 @@ static void *run_lanes(void *arg)
 {
     const struct lanes_job *j = arg;
     for (uint32_t l = j->first; l < j->a->lanes; l += j->step)
-        fill_segment(j->a, j->pass, l, j->slice);
+        fill_segment(j->a, j->pass, l, j->slice, l == 0);
     return NULL;
 }
 
@@ -364,6 +386,7 @@ int pnp_argon2id(uint8_t *out, size_t outlen, const uint8_t *pwd, size_t pwdlen,
     for (int i = 0; i < BLOCK_WORDS; i++)
         le64(blk + 8 * i, c.v[i]);
     hprime(out, (uint32_t)outlen, blk, sizeof blk);
+    report("Argon2id", (uint64_t)t * 4 * a.seg, (uint64_t)t * 4 * a.seg);
 
     explicit_bzero(h0, sizeof h0);
     explicit_bzero(blk, sizeof blk);

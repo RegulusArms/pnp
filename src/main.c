@@ -18,8 +18,10 @@
  * of words from the EFF large word list, chosen with the same random sources as the pad. */
 #define _GNU_SOURCE
 #include "fileio.h"
+#include "kdf.h"
 #include "mac.h"
 #include "pnp.h"
+#include "progress.h"
 #include "protect.h"
 #include "rng.h"
 
@@ -123,6 +125,7 @@ static void say(const char *fmt, ...)
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     pnp_clean(msg);
+    pnp_progress_interrupt(); /* a progress line on the screen is wiped first */
     fprintf(stderr, "pnp: %s\n", msg);
 }
 
@@ -151,7 +154,7 @@ static void usage(FILE *f)
             "      --kdf-memory MIB  memory each passphrase guess costs, for --protect (default %d, %d-%d)\n"
             "      --passphrase-file FILE  read the passphrase from FILE's first line instead of the terminal\n"
             "  -f, --force     replace output files that already exist\n"
-            "  -q, --quiet     don't print which random sources made the pad\n"
+            "  -q, --quiet     don't print which random sources made the pad, notes, or progress\n"
             "  -v, --verbose   print every random source and its state\n"
             "  -V, --version   print the version\n"
             "  -h, --help      print this help\n"
@@ -477,6 +480,33 @@ static long get_passphrase(const char *file, int confirm, char *err, size_t errl
     return pnp_read_passphrase(file, confirm, pass, sizeof pass, err, errlen);
 }
 
+/* A progress line for the passphrase hashes (kdf.c reports Balloon, then Argon2id): one line per phase. */
+static struct pnp_progress kdf_prog;
+static const char *kdf_phase;
+
+static void kdf_progress(const char *phase, uint64_t done, uint64_t total)
+{
+    if (phase != kdf_phase) {
+        pnp_progress_end(&kdf_prog);
+        kdf_phase = phase;
+        pnp_progress_start_steps(&kdf_prog, "hashing the passphrase:", phase, total, !quiet);
+    }
+    pnp_progress_set(&kdf_prog, done);
+}
+
+static void kdf_progress_on(void)
+{
+    kdf_phase = NULL;
+    pnp_kdf_set_progress(kdf_progress);
+}
+
+static void kdf_progress_off(void)
+{
+    pnp_kdf_set_progress(NULL);
+    pnp_progress_end(&kdf_prog);
+    kdf_phase = NULL;
+}
+
 /* the memory the passphrase hashing takes, for messages */
 static uint32_t kdf_mib(const struct pnp_protect *p) { return p->argon_kib / 1024; }
 
@@ -508,6 +538,8 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
     struct stat st;
 
     note_unlocked();
+    struct pnp_progress prog;
+    memset(&prog, 0, sizeof prog);
     memset(&mac, 0, sizeof mac);
     memset(wrap, 0, sizeof wrap);
     memset(&ct, 0, sizeof ct);
@@ -561,7 +593,10 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
         if (!quiet)
             say("protecting the key with the passphrase (Balloon and Argon2id, %u MiB, %u lanes)...", kdf_mib(&prot),
                 prot.argon_lanes);
-        if (pnp_protect_lock(&prot, pass, (size_t)plen, wkey) < 0) {
+        kdf_progress_on();
+        int locked = pnp_protect_lock(&prot, pass, (size_t)plen, wkey);
+        kdf_progress_off();
+        if (locked < 0) {
             say("can't get the %u MiB of memory --protect needs (choose less with --kdf-memory)", kdf_mib(&prot));
             goto out;
         }
@@ -614,6 +649,7 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
                            sizeof err) < 0)
         goto material_failed;
 
+    pnp_progress_start(&prog, "encrypting", in_path, (uint64_t)st.st_size, !quiet);
     for (;;) {
         if (pnp_stop)
             goto out;
@@ -637,7 +673,9 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
         if (write_key_material(key, key_path, nkeys, &rng, po->on ? wrap : NULL, buf_pad, (size_t)n, &failed, err,
                                sizeof err) < 0)
             goto material_failed;
+        pnp_progress_add(&prog, (uint64_t)n);
     }
+    pnp_progress_end(&prog);
     pnp_mac_final(&mac, tag);
     if (pnp_write_all(ct.fd, tag, sizeof tag) < 0) {
         failed = ct_path;
@@ -705,6 +743,7 @@ rng_failed:
 write_failed:
     say("can't write %s: %s", failed, strerror(errno));
 out:
+    pnp_progress_end(&prog);
     wipe_buffers();
     explicit_bzero(&mac, sizeof mac);
     explicit_bzero(mackey, sizeof mackey);
@@ -881,7 +920,9 @@ static int unlock_keys(char *const *kp, const struct pnp_file *kf, int nk, const
             }
             if (!quiet)
                 say("unlocking the key with the passphrase (Balloon and Argon2id, %u MiB)...", kdf_mib(&kf[k].pp));
+            kdf_progress_on();
             int r = pnp_protect_unlock(&kf[k].pp, pass, (size_t)plen, wkey);
+            kdf_progress_off();
             if (r == -1) {
                 say("can't get the %u MiB of memory unlocking %s needs", kdf_mib(&kf[k].pp), kp[k]);
                 goto out;
@@ -915,6 +956,8 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
     struct stat st;
 
     note_unlocked();
+    struct pnp_progress prog;
+    memset(&prog, 0, sizeof prog);
     memset(&mac, 0, sizeof mac);
     memset(wrap, 0, sizeof wrap);
     memset(&out, 0, sizeof out);
@@ -1019,6 +1062,7 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
         say("%s", err);
         goto out;
     }
+    pnp_progress_start(&prog, "decrypting", ct_path, (uint64_t)ct.body, !quiet);
     for (off_t left = ct.body; left > 0;) {
         if (pnp_stop)
             goto out;
@@ -1050,7 +1094,9 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
             goto out;
         }
         left -= n;
+        pnp_progress_add(&prog, (uint64_t)n);
     }
+    pnp_progress_end(&prog);
     if (checked && read_some(ct.fd, want, sizeof want) != (ssize_t)sizeof want) {
         say("%s ended early or changed while pnp was reading it", ct_path);
         goto out;
@@ -1082,6 +1128,7 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
 oom:
     say("out of memory");
 out:
+    pnp_progress_end(&prog);
     wipe_buffers();
     explicit_bzero(&mac, sizeof mac);
     explicit_bzero(mackey, sizeof mackey);

@@ -4,6 +4,8 @@ What changed in each version of pnp, newest first.
 
 ## 0.1.0-alpha.5
 
+- **A progress line** for every file encrypted or decrypted (how far, how fast, how long is left), and for the
+  passphrase hashing of `--protect`. Shown only on a terminal, never in logs or pipes, and not with `-q`.
 - **Replacing files with `-f` can no longer lose an old key.** The files being replaced are moved aside and deleted
   only once every new file is in place; if saving one fails, the old ones are put back.
 - pnp now warns when it runs in a virtual machine (whose host can read the pad and choose what the hardware

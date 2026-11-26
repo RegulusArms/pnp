@@ -160,7 +160,13 @@ Replace output files that already exist. Without it,
 never replaces a file.
 .TP
 .BR \-q ", " \-\-quiet
-Don't print which random sources made the key, or what was written.
+Don't print which random sources made the key, what was written, notes, or the progress line.
+.IP
+Without it, on a terminal,
+.B pnp
+shows a progress line for each file (how far along, how fast, how long is left) and for the passphrase hashing of
+.BR \-\-protect .
+It is never written when standard error isn't a terminal.
 .TP
 .BR \-v ", " \-\-verbose
 Print every random source and its state before encrypting.
