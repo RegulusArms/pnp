@@ -1,6 +1,6 @@
 # pnp
 
-**Version 0.1.0-alpha.1**: early alpha. Install instructions will be at https://pnp.regulusarms.com.
+**Version 0.1.0-alpha.2**: early alpha. See [Installing](#installing).
 
 A command-line file encryption tool for Debian, Ubuntu, Linux Mint and other Debian-based systems, built to stay
 secure even if P = NP.
@@ -23,20 +23,56 @@ an Imperial code cylinder on your belt at all times to keep your keys safe. Unif
 
 ## Installing
 
-From the apt repository, on Debian 12+, Ubuntu 22.04+ and systems based on them (Linux Mint 21+, Kubuntu, KDE
-neon), 64-bit PCs. One package works on all of them. (The repository goes live with the first release; read the
-disclaimer below first.)
+Works on Debian 12 and newer, Ubuntu 22.04 and newer, and systems based on them (Linux Mint 21+, Kubuntu, KDE
+neon), on 64-bit PCs (amd64). One package works on all of them. Read the
+[disclaimer](#disclaimer-if-p--np-build-from-source) first: if you're guarding against P = NP, build from source
+instead.
+
+**1. Add the repository's signing key**
 
 ```
 sudo install -d -m 0755 /etc/apt/keyrings
 sudo wget -qO /etc/apt/keyrings/pnp.asc https://pnp.regulusarms.com/pnp.asc
-printf 'Types: deb\nURIs: https://pnp.regulusarms.com/\nSuites: stable\nComponents: main\nSigned-By: /etc/apt/keyrings/pnp.asc\n' \
-  | sudo tee /etc/apt/sources.list.d/pnp.sources
-sudo apt update && sudo apt install pnp
+gpg --show-keys /etc/apt/keyrings/pnp.asc
 ```
 
-`gpg --show-keys /etc/apt/keyrings/pnp.asc` should show the fingerprint
-`B605 C24B 0B68 BEF1 3104  D104 8A29 1737 19C4 4365`. For development builds, use `Suites: dev`.
+The last command must show this fingerprint. If it doesn't, stop, delete the file, and don't continue:
+
+```
+B605C24B0B68BEF13104D1048A29173719C44365
+```
+
+**2. Add the repository and install pnp**
+
+```
+printf 'Types: deb\nURIs: https://pnp.regulusarms.com/\nSuites: stable\nComponents: main\nSigned-By: /etc/apt/keyrings/pnp.asc\n' \
+  | sudo tee /etc/apt/sources.list.d/pnp.sources
+sudo apt update
+sudo apt install pnp
+```
+
+For development builds (newer, less tested), write `Suites: dev` instead of `Suites: stable`.
+
+**3. Let pnp read your hardware random generator**
+
+```
+sudo usermod -aG pnp $USER
+```
+
+Then log out and back in. `pnp --sources` shows which hardware sources pnp can use. See
+[where the randomness comes from](#where-the-randomness-comes-from).
+
+**Updating:** `sudo apt update && sudo apt upgrade` updates pnp with the rest of your system.
+
+**Removing:** `sudo apt remove pnp` removes the program. `sudo apt purge pnp` also removes the `pnp` group. To
+stop using the repository too:
+
+```
+sudo rm /etc/apt/sources.list.d/pnp.sources /etc/apt/keyrings/pnp.asc
+```
+
+Files you encrypted stay encrypted after pnp is removed. Keep their keys: you can decrypt them later with pnp, or
+with the few lines of Python in [docs/format.md](docs/format.md).
 
 ## Where the randomness comes from
 

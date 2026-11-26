@@ -3,7 +3,7 @@
 #   pull request to main  → tests and build only (the .deb is kept as a workflow artifact)
 #   push to main (merge)  → release v<VERSION>, and publishes to the apt "stable" suite, unless that tag exists already
 # A failing test means no package; a package failing its install check on any release isn't published to apt.
-# A push or pull request that only changes Markdown files (*.md) doesn't start it at all.
+# A push or pull request that only changes documentation (see "on:") doesn't start it at all.
 #
 # One .deb for every release: it's built on the oldest supported one (ubuntu:22.04, glibc 2.34+), and glibc is
 # backward compatible, so it installs on every newer release. The "package" and "apt-check" matrices are the
@@ -15,12 +15,17 @@
 name: Build .deb
 
 on:
+  # Only changes that affect what's built, tested or published start a run. Changes to these alone don't: Markdown
+  # (README, CHANGELOG, docs, CLAUDE.md), anything else in docs/, pictures, LICENSE, .gitignore, issue templates.
+  # Everything else does: src/, tests/, Makefile, VERSION, debian/, data/, man/ (all packaged or run), this
+  # workflow, and .github/apt/ (the published suites, key and page).
+  # The README and CHANGELOG are packaged as docs, so a change to them alone reaches users with the next build.
   push:
     branches: [DEV, main]
-    paths-ignore: ['**.md']
+    paths-ignore: ['**.md', 'docs/**', '**.png', '**.jpg', '**.svg', 'LICENSE', '.gitignore', '.github/ISSUE_TEMPLATE/**']
   pull_request:
     branches: [main]
-    paths-ignore: ['**.md']
+    paths-ignore: ['**.md', 'docs/**', '**.png', '**.jpg', '**.svg', 'LICENSE', '.gitignore', '.github/ISSUE_TEMPLATE/**']   # the same list as push's
   workflow_dispatch:   # run by hand from the Actions tab, whatever changed
 
 permissions:
