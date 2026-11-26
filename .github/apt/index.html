@@ -38,8 +38,11 @@
   <p>pnp encrypts any file with a key of truly random bytes as long as the file, read from your machine's hardware
   random number generators. A one-time pad doesn't rely on any problem being hard to compute, so no amount of
   computing power can break it.</p>
-<pre>pnp photo.jpg            # writes photo.jpg.pnp and its key photo.jpg.pnp.key
+<pre>pnp                      # browse your files and encrypt or decrypt them step by step
+pnp photo.jpg            # writes photo.jpg.pnp and its key photo.jpg.pnp.key
 pnp -d photo.jpg.pnp     # gives back photo.jpg</pre>
+  <p>Without the key, nobody can read the file; with it, anyone can. So the weakest link is how you store your keys:
+  keep them offline and apart from the <code>.pnp</code> files.</p>
 
   <h2>Install</h2>
   <p>For Debian 12 and newer, Ubuntu 22.04 and newer, and systems based on them (Linux Mint 21+, Kubuntu, KDE neon),
@@ -61,6 +64,14 @@ sudo apt install pnp</pre>
 <pre>sudo usermod -aG pnp $USER</pre>
   <p><code>pnp --sources</code> lists the hardware sources it found. pnp also uses the RDSEED instruction of Intel and
   AMD CPUs, which needs no setup. If no hardware source works, pnp refuses to encrypt.</p>
+
+  <h2>Locking a key with a passphrase</h2>
+  <p><code>pnp --protect</code> locks the key file with a passphrase, and the guide in the source repository shows how
+  to keep keys on an encrypted drive (LUKS). Both use ordinary, computationally secure cryptography: they stop common
+  criminals who steal a key, not a state with real resources, and they're no part of the P = NP guarantee. What
+  stops a state is keeping the key physically out of reach, or splitting it into shares kept in different places
+  (<code>--shares</code>). <a href="p-np.html">How long would a top GPU rack take to break a locked key if
+  P = NP?</a></p>
 
   <h2>If P = NP, build from source</h2>
   <div class="note">

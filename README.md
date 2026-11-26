@@ -8,7 +8,7 @@
 [![C11, libc only](https://img.shields.io/badge/C11-libc%20only-A8B9CC?logo=c&logoColor=white)](#building-from-source)
 [![License: MIT](https://img.shields.io/github/license/RegulusArms/pnp)](LICENSE)
 
-**Version 0.1.0-alpha.2**: early alpha. See [Installing](#installing).
+**Version 0.1.0-alpha.7**: early alpha. See [Installing](#installing).
 
 A command-line file encryption tool for Debian, Ubuntu, Linux Mint and other Debian-based systems, built to stay
 secure even if P = NP.
@@ -18,13 +18,21 @@ machine's hardware random number generators. The file and the key are combined w
 doesn't depend on any problem being hard to compute, so faster computers or new algorithms can't break it.
 
 ```
+pnp                        # browse this folder and encrypt or decrypt step by step (see below)
 pnp photo.jpg              # writes photo.jpg.pnp (encrypted) and photo.jpg.pnp.key (the key)
 pnp -d photo.jpg.pnp       # uses photo.jpg.pnp.key to write photo.jpg again
 pnp --sources              # which hardware random sources this machine has
+
+pnp --key-out /media/usb photo.jpg      # the key goes straight onto the USB stick, never onto this disk
+pnp -d -k /media/usb/photo.jpg.pnp.key photo.jpg.pnp
+pnp --shares 2 photo.jpg                # the key as two shares, both needed to decrypt
+pnp --protect photo.jpg                 # the key also locked with a passphrase (see below)
+pnp --gen-passphrase                    # print a strong random passphrase
 ```
 
 Keep the `.pnp.key` file secret and separate from the `.pnp` file, and never reuse it. Anyone holding both can
-decrypt the file; without the key, nobody can.
+decrypt the file; without the key, nobody can. **That makes the way you store your keys the weakest link in pnp**:
+see [Keeping your keys](#keeping-your-keys).
 
 The catch: the key is as big as the file, and losing it means losing the file. So from now on you'll need to carry
 an Imperial code cylinder on your belt at all times to keep your keys safe. Uniform sold separately.
@@ -72,6 +80,12 @@ Then log out and back in. `pnp --sources` shows which hardware sources pnp can u
 
 **Updating:** `sudo apt update && sudo apt upgrade` updates pnp with the rest of your system.
 
+**Downloading the .deb directly** from a [GitHub release](https://github.com/RegulusArms/pnp/releases) instead:
+check it with the signed `SHA256SUMS` beside it (`gpg --verify SHA256SUMS.asc SHA256SUMS && sha256sum -c
+--ignore-missing SHA256SUMS`, with `pnp.asc` imported), then `sudo apt install ./pnp_*.deb`. Every package can
+also be rebuilt bit for bit from its source: [docs/reproducible.md](docs/reproducible.md) shows how to check one
+against your own build.
+
 **Removing:** `sudo apt remove pnp` removes the program. `sudo apt purge pnp` also removes the `pnp` group. To
 stop using the repository too:
 
@@ -80,7 +94,8 @@ sudo rm /etc/apt/sources.list.d/pnp.sources /etc/apt/keyrings/pnp.asc
 ```
 
 Files you encrypted stay encrypted after pnp is removed. Keep their keys: you can decrypt them later with pnp, or
-with the few lines of Python in [docs/format.md](docs/format.md).
+with the few lines of Python in [docs/format.md](docs/format.md) (keys locked with `--protect` need two Python
+packages as well, `argon2-cffi` and `cryptography`).
 
 ## Where the randomness comes from
 
@@ -91,8 +106,18 @@ A one-time pad is only unbreakable if its key is truly random. pnp reads the har
 - **RDSEED**: the random number instruction built into Intel and AMD CPUs.
 
 pnp checks each source's output as it reads it, using the start-up and continuous health tests from NIST SP
-800-90B. It then combines all the sources with XOR, together with the kernel's own generator. Even if one source
-were weak, the key would be as unpredictable as the best of them.
+800-90B. It then combines all the sources with XOR, together with the kernel's own generator. As long as the
+sources are independent, the key is at least as unpredictable as the best of them, so one weak or dishonest source
+can't spoil it.
+
+What the health tests can't do is prove a source is truly random. They catch a source that breaks (stuck, repeating,
+badly biased), but a source that secretly ran a hidden algorithm would pass them. So pnp's information-theoretic
+guarantee rests on at least one of your hardware sources really being random. The sources pnp used are named every
+time it makes a key (`pnp --sources -v` lists them with their drivers).
+
+**In a virtual machine**, the host decides what RDSEED and `/dev/hwrng` return, and can read the machine's memory
+anyway, pad and file included. pnp says so when it detects one. Encrypt on a physical machine unless the host is
+yours.
 
 **If no hardware source works, pnp refuses to encrypt.** Software randomness alone isn't safe if P = NP. Decrypting
 needs no random source.
@@ -103,24 +128,206 @@ Only root can read `/dev/hwrng` by default. The package adds a `pnp` group that 
 sudo usermod -aG pnp $USER     # then log out and back in
 ```
 
+## The interactive mode
+
+Type `pnp` on its own in a terminal and it opens a file browser for the folder you're in:
+
+```
+    ____  _   ______
+   / __ \/ | / / __ \
+  / /_/ /  |/ / /_/ /
+ / ____/ /|  / ____/
+/_/   /_/ |_/_/          p = np. now what?   pnp 0.1.0-alpha.6
+Folder:        /home/you/documents
+Code cylinder: /media/you/KEYS
+--------------------------------------------------------------------------------
+    ../                                        folder
+[ ] report.pdf                                 2.1 MB
+[x] tax-2026.xlsx                              40.0 KB
+[ ] taxes-2025.xlsx.pnp                        encrypted, key found
+--------------------------------------------------------------------------------
+Enter: encrypt. Writes report.pdf.pnp here
+and its key to /media/you/KEYS/report.pdf.pnp.key
+```
+
+- **Move** with the arrow keys (or `j`/`k`), **select** files with Space, **open** a folder with Enter, go
+  **up** with Backspace. `.` shows hidden files, `q` quits.
+- **Enter on files to encrypt** shows exactly what will be written before anything is: each `.pnp` file and
+  where its key goes. There you choose where the key goes, whether to split it into shares (each share on a
+  different drive), and whether to lock it with a passphrase (pnp can make one for you).
+- **Enter on `.pnp` files** shows which key decrypting will use, on which drive, before it does. pnp matches
+  each file to its key by the ID they share, so renamed files are still matched, and shares spread over
+  several drives are all found. If a key or a share is missing, it says which, and skips that file.
+- **The code cylinder** (your key drive, see [docs/code-cylinder.md](docs/code-cylinder.md)) is found among the
+  drives mounted in `/media/$USER` or `/run/media/$USER`, preferring one labelled `KEYS`. Press `c` to choose
+  another drive or type a folder, and `r` to look again after plugging a drive in. pnp looks for keys at the top
+  of each drive and beside the `.pnp` file.
+
+It runs the same encryption and decryption as the commands above, with the same checks.
+
+## What the guarantee rests on
+
+pnp's encryption and integrity check are information-theoretically secure, which no amount of computing power
+(or proof that P = NP) can change, **as long as**:
+
+1. **the key is truly random:** at least one hardware source is (see above);
+2. **the key stays secret:** stored apart from the ciphertext, in your physical custody;
+3. **the key is used once:** pnp makes a new one for every file and never reuses it;
+4. **the computer encrypting or decrypting is trustworthy:** malware on it, or the host of a virtual machine, sees
+   the file and the key in memory, whatever the mathematics says.
+
+The passphrase lock (`--protect`) and the way pnp is delivered (the signed apt repository, HTTPS) are only
+computationally secure, as their own sections explain. [docs/threat-model.md](docs/threat-model.md) goes through
+who pnp defends against, who it can't, and each assumption.
+
+## Hardening
+
+The guarantee above is mathematics. These protect the program that carries it out:
+
+- **A sandbox.** pnp can never open a network connection or run another program. Once a command-line run has its
+  files open, it's fenced in further: only the system calls the rest of the work needs (seccomp) and only the
+  folders its outputs go to (Landlock, Linux 5.13+). `pnp -v` says what the kernel allowed.
+- **Secrets stay in memory.** Pad, file and passphrase buffers are locked in RAM (never swapped), left out of
+  core dumps and wiped after use; `--strict` stops instead of carrying on when they can't be locked.
+- **Crash-safe saving.** Outputs take their names only once complete; a crash or power cut leaves hidden
+  leftovers at most, which the next run points out ([docs/recovery.md](docs/recovery.md)).
+- **Tested hard.** Every parser of untrusted input is fuzzed, the code is checked by three static analysers and
+  built with sanitizers in CI, the MAC is constant time ([docs/constant-time.md](docs/constant-time.md)), and pnp
+  is killed at every step of saving to check that nothing is lost.
+- **Built to be checked.** Reproducible builds, signed checksums, and an [entropy measurement](docs/entropy.md)
+  of real hardware sources. Found a problem? [SECURITY.md](SECURITY.md) says how to report it privately.
+
 ## Options
 
 | Option | Meaning |
 |---|---|
 | `-d`, `--decrypt` | Decrypt instead of encrypting |
-| `-k KEY`, `--key KEY` | The key to decrypt with (default `FILE.pnp.key`) |
+| `--verify` | Check `FILE.pnp` against its key or shares (that they belong together, their sizes, and the integrity check over every byte) without writing anything. Exit status 0 if it's whole. For checking archives now and then, or before a real decrypt |
+| `-k KEY`, `--key KEY` | The key to decrypt with (default `FILE.pnp.key`, or the shares `FILE.pnp.key.1`, `.2`…). For a key split into shares, give `-k` once per share, in any order |
 | `-o OUT`, `--output OUT` | Where to write: the ciphertext when encrypting (its key goes to `OUT.key`), the plaintext when decrypting |
+| `--key-out PATH` | Write the key straight into the folder `PATH` (as `FILE.pnp.key`), or to the file name `PATH`, instead of beside the ciphertext. With `--shares`: once for all shares (a folder), or once per share |
+| `--shares N` | Write the key as `N` shares (2 to 16) instead of one key file. Every share is needed to decrypt |
+| `--protect` | Also lock the key (or each share) with a passphrase, asked for twice. Decrypting asks for it. See [Locking a key with a passphrase](#locking-a-key-with-a-passphrase) |
+| `--kdf-memory MIB` | With `--protect`: the memory each passphrase guess costs, in MiB (default 1024, 8 to 65536). The decrypting computer needs this much free memory; pnp checks before it starts |
+| `--passphrase-file FILE` | Read the passphrase from the first line of `FILE` instead of asking (for scripts). Anyone who can read that file has the passphrase |
+| `--gen-passphrase[=WORDS]` | Print a random passphrase of 7 words (or `WORDS`, 5 to 20) and exit |
 | `-f`, `--force` | Replace files that already exist. Without it, pnp never replaces anything |
-| `-q`, `--quiet` | Don't print which sources made the key, or what was written |
+| `--strict` | Refuse to run if pad, file or passphrase bytes can't be locked in memory (kept out of swap), instead of only warning. With `--protect`, the passphrase hashes' memory must be lockable too, which usually means raising `ulimit -l` |
+| `-q`, `--quiet` | Don't print which sources made the key, what was written, notes, or the progress line |
 | `-v`, `--verbose` | List every random source and its state |
 | `--sources` | List the hardware random sources and exit |
+
+On a terminal, pnp shows a progress line for each file (and for `--protect`'s passphrase hashing): how far along
+it is, how fast, and how long is left. A slow hardware random source can make a large file take hours.
 
 pnp writes each output under a hidden temporary name and renames it into place only once it's complete. A failure,
 a full disk or Ctrl-C never leaves half a file behind. The key is created readable by you only. `man pnp` has the
 details, and [docs/format.md](docs/format.md) describes the file format.
 
-**pnp doesn't detect tampering.** A one-time pad hides what's in a file but can't tell whether the ciphertext was
-changed: a modified `.pnp` file decrypts to modified data without an error.
+**pnp detects tampering and damage.** Every encryption also gets a one-time MAC, keyed by 32 more hardware-random
+bytes kept in the key: like the pad, it can't be forged with any amount of computing power (HMAC or a hash
+couldn't promise that if P = NP). If the `.pnp` file, or the key, has been changed or damaged by even one bit,
+decrypting fails and writes nothing. Files made by pnp 0.1.0-alpha.2 or older have no such check; pnp still
+decrypts them and says so.
+
+## Keeping your keys
+
+A one-time pad moves the whole problem of secrecy onto the key: the ciphertext is safe anywhere, the key has to
+be guarded.
+
+**The weakest link in pnp is how well you physically store your keys.** The mathematics can't be broken: no
+computer, new algorithm or proof that P = NP will ever read a pnp file without its key. So nobody serious will
+try. They'll go after the key instead: a USB stick left in a laptop bag, a key copied to a cloud folder or
+emailed "just this once", a backup drive in an unlocked drawer, an old stick thrown away without being destroyed.
+In practice, your files are exactly as safe as the place your keys are kept, and no more. Everything else pnp does
+(hardware randomness, health tests, the integrity check, shares, `--protect`) is there so that this is the only
+thing left to get right.
+
+[docs/code-cylinder.md](docs/code-cylinder.md) walks through setting up an encrypted key drive to carry. Some
+rules:
+
+- **Guard keys physically first, and treat encryption as a second lock.** An encrypted drive, a password manager
+  or a cloud account is only as strong as the very ciphers P = NP would break, and so is pnp's own `--protect`. A
+  drive in your pocket, a safe or a bank deposit box doesn't depend on any of that.
+- **Encrypt the key drive anyway** (LUKS2, or a VeraCrypt volume). It's computationally secure only, but it means
+  a lost or stolen drive gives no usable keys to anyone short of a state: they'd have to copy the whole drive and
+  then crack its passphrase. It adds to physical custody, never replaces it, and while the drive is unlocked it
+  protects nothing.
+- **Keep the ciphertext anywhere and the key offline.** Never store a key with its ciphertext, in cloud storage,
+  or in email.
+- **Keep keys off the computer's SSD.** A deleted file on an SSD may stay recoverable, because the drive moves data
+  around internally and can't be relied on to overwrite it. Write the key straight to removable media with
+  `--key-out`, so it never touches the internal disk:
+
+  ```
+  pnp --key-out /media/$USER/KEYS photo.jpg
+  ```
+
+- **Keep two or more copies of a key in different places**, and for long-term archives on more than one kind of
+  storage (USB sticks, SD cards, optical discs), since all of them fail eventually. Keep a checksum list
+  (`sha256sum *.key > SHA256SUMS`) beside each copy and check it now and then (`sha256sum -c SHA256SUMS`) to catch
+  corruption early.
+- **Or split the key into shares**, so that no single place holds it. `--shares N` writes `N` share files: each
+  one alone, or any `N`−1 together, is just random noise, and all `N` are needed to decrypt. Like the pad itself,
+  this holds against any amount of computing power. Put each share in a different place, for example:
+
+  ```
+  pnp --shares 2 --key-out /media/$USER/STICK1 --key-out /media/$USER/STICK2 photo.jpg
+  pnp -d -k /media/$USER/STICK1/photo.jpg.pnp.key.1 -k /media/$USER/STICK2/photo.jpg.pnp.key.2 photo.jpg.pnp
+  ```
+
+  Losing any one share loses the file, so back up each share as you would a key.
+- **Optionally, lock the key with a passphrase too** (`--protect`, below). It doesn't replace any of the rules
+  above: it only slows down someone who already has your key file.
+- **Destroying every copy of a key makes the file unreadable for good**, which can be what you want. Remember that
+  overwriting may not destroy data on SSDs and flash media: physically destroy the medium if it matters.
+
+## Locking a key with a passphrase
+
+`--protect` encrypts the key file (or each share) under a passphrase, so a stolen key alone isn't enough:
+
+```
+pnp --gen-passphrase                    # e.g. "wizard foothold applied provoke hatred whoever attendant"
+pnp --protect photo.jpg                 # asks for the passphrase twice
+pnp -d photo.jpg.pnp                    # asks for it once
+```
+
+**This is not part of pnp's P = NP guarantee.** It uses ordinary, computationally secure cryptography: the
+passphrase goes through two memory-hard password hashes one after the other (Balloon, then Argon2id), and the
+result encrypts the key with ChaCha20. Its job is to make guessing expensive: each guess costs about a gigabyte of
+memory and several seconds, so trying passphrases by the million on graphics cards isn't practical. That's a real
+obstacle for a thief or a casual attacker, and none at all for someone who can break these algorithms. If they
+did, they'd be left holding the plain key, exactly as without `--protect`: the one-time pad inside is unchanged.
+
+**Who it stops: common criminals, not the Galactic Federation.** With a generated passphrase, and the key on an
+encrypted drive ([docs/code-cylinder.md](docs/code-cylinder.md)), a stolen key is worthless to a thief: today
+nobody, states included, can guess a 7-word passphrase at a gigabyte per guess. But if P = NP comes with a
+practical algorithm, the attacker doesn't even need the passphrase. With the ciphertext as well as the locked key,
+they can search for the 256-bit ChaCha20 key directly, and checking a guess there costs one ChaCha20 block, with
+no memory-hard hashing in it, whatever `--kdf-memory` was. How long that takes depends only on how good their
+algorithm is: a criminal with one GPU rack is still kept out unless it's very good, a state with thousands of racks
+isn't. [How long would a top GPU rack take?](https://pnp.regulusarms.com/p-np.html) What keeps a state out, P = NP
+or not, is the same as without `--protect`: the key out of their reach, or split into shares kept in different
+places (`--shares`, which works with `--protect`).
+
+- **The passphrase is what matters most.** Hashing slows each guess, but a short or common passphrase is still
+  found quickly. `--gen-passphrase` picks words from the [EFF's list of 7776](https://www.eff.org/dice) with the
+  same hardware randomness as the pad: 7 words is about 90 bits, far beyond guessing. Write it down and keep it
+  apart from the key. Want more? `--gen-passphrase=10` is about 128 bits, and the most, 20 words, is about 256
+  bits: as strong as the ChaCha20 key the lock ends in, so more words would add nothing. The interactive mode
+  lets you choose the number too. Past 7 words the gain is on paper only: a phrase too long to remember gets
+  written down, and is then only as safe as that paper.
+- **Forget the passphrase and the file is gone**, just as if the key were lost.
+- **Decrypting needs the memory too**: 1 GiB by default. pnp checks there's enough free memory before it starts,
+  and stops with a message if not. On a smaller machine, choose less when encrypting (`--kdf-memory 256`), which
+  makes each guess cheaper as well.
+- **More memory makes each guess costlier still.** `--kdf-memory 51200` (50 GiB) costs an attacker about 2,500
+  times more per guess than the default, and pnp uses every CPU core for it: on a 32-core machine it takes about
+  30 seconds. But every computer you'll ever decrypt on needs 50 GiB free, or the file can't be opened there. A
+  longer passphrase is the cheaper gain: each extra `--gen-passphrase` word multiplies the guessing work by
+  7776, at no cost to you.
+- pnp still checks the key belongs to the file before asking for the passphrase, and says "wrong passphrase" at
+  once instead of after decrypting. Changes to a locked key are caught by the integrity check, as for any key.
 
 ## Building from source
 
@@ -132,8 +339,12 @@ make                    # builds build/pnp
 make test               # runs the tests
 sudo make install       # installs to /usr/local (PREFIX=... to change)
 sudo make install-udev  # the udev rule and pnp group, so pnp can read /dev/hwrng
-make deb                # builds a .deb in build/ (needs dpkg-dev)
+make deb                # builds a .deb in build/ (needs dpkg-dev); reproducible: docs/reproducible.md
 ```
+
+For development: `make sanitize` runs the tests under AddressSanitizer and UndefinedBehaviorSanitizer,
+`make analyze` runs gcc's `-fanalyzer`, cppcheck and clang's scan-build, and `make fuzz-run` fuzzes every parser of
+untrusted input (needs clang). CI runs all of them.
 
 ## Disclaimer: if P = NP, build from source
 
@@ -150,7 +361,11 @@ building from source is the safest way to get pnp:
 1. Get the source from more than one place, and check the copies match.
 2. **Read it before you build it.** pnp is deliberately small, written in plain C with no libraries beyond the
    standard C library, so the whole program can be reviewed by hand. Check above all how the key is generated
-   (only hardware random sources) and that nothing is sent over the network.
+   (only hardware random sources) and that nothing is sent over the network. The optional passphrase lock
+   (`--protect`: src/protect.c, kdf.c, blake2b.c, chacha20.c) is the only part that relies on problems being hard,
+   and it only ever adds to the pad's protection. The interactive mode (src/tui.c) is the largest file but never
+   touches key bytes: it only reads file headers to match files with keys, then calls the same functions as the
+   command line.
 3. Build it yourself with your distribution's own compiler (`make`, then `sudo make install`).
 
 The installed apt package is fine for everyday use as long as P ≠ NP, or as long as no practical algorithm exists.
@@ -160,3 +375,21 @@ amount of computing power.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Documentation
+
+| Document | What's in it |
+|---|---|
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
+| [docs/code-cylinder.md](docs/code-cylinder.md) | Setting up an encrypted key drive (an external hard disk) to carry with you, and why pnp relies on physical security |
+| [docs/format.md](docs/format.md) | The file formats (ciphertext, key, key shares, keys locked with a passphrase), and how to decrypt without pnp |
+| [docs/threat-model.md](docs/threat-model.md) | Who pnp defends against, who it can't, and every assumption the guarantee rests on |
+| [docs/recovery.md](docs/recovery.md) | What an interrupted run can leave behind, and how to recover |
+| [docs/reproducible.md](docs/reproducible.md) | Rebuilding a published package bit for bit, and checking the signed checksums |
+| [docs/constant-time.md](docs/constant-time.md) | Which code runs on secrets, and why its timing doesn't depend on them |
+| [docs/entropy.md](docs/entropy.md) | NIST SP 800-90B measurements of real hardware sources, and how to measure yours |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability privately, and what happens next |
+| [man/pnp.1](man/pnp.1) | The manual page (`man pnp` once installed) |
+| [TODO.md](TODO.md) | Planned work |
+| [LICENSE](LICENSE) | The MIT license |
+| [pnp.regulusarms.com](https://pnp.regulusarms.com) | The install page and apt repository |

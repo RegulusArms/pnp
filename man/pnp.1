@@ -8,18 +8,42 @@ pnp \- one-time pad file encryption that stays secure even if P = NP
 .RB [ \-v ]
 .RB [ \-o
 .IR OUT ]
+.RB [ \-\-key\-out
+.IR PATH ]...
+.RB [ \-\-shares
+.IR N ]
+.RB [ \-\-protect
+.RB [ \-\-kdf\-memory
+.IR MIB ]
+.RB [ \-\-passphrase\-file
+.IR FILE ]]
 .I FILE
 .br
 .B pnp \-d
 .RB [ \-f ]
 .RB [ \-q ]
 .RB [ \-k
-.IR KEY ]
+.IR KEY ]...
 .RB [ \-o
 .IR OUT ]
+.RB [ \-\-passphrase\-file
+.IR FILE ]
 .I FILE.pnp
 .br
+.B pnp \-\-verify
+.RB [ \-q ]
+.RB [ \-k
+.IR KEY ]...
+.RB [ \-\-passphrase\-file
+.IR FILE ]
+.I FILE.pnp
+.br
+.B pnp
+.RB [ \-\-strict ]
+.br
 .B pnp \-\-sources
+.br
+.BR pnp " " \-\-gen\-passphrase [=\fIWORDS\fR]
 .SH DESCRIPTION
 .B pnp
 encrypts any file with a one-time pad: a key of random bytes exactly as long as the file, combined with it by XOR.
@@ -47,30 +71,142 @@ combined with XOR, together with the kernel's
 If no hardware source is usable,
 .B pnp
 refuses to encrypt. Decrypting needs no random source.
+.SS Interactive mode
+.B pnp
+alone, in a terminal, opens a file browser for the current folder. Arrow keys (or j and k) move, Space selects,
+Enter opens a folder or goes on with the selection (or the highlighted file), Backspace goes up a folder, . shows
+hidden files, c chooses the code cylinder, r looks again for drives and keys, and q quits.
+.PP
+For files to encrypt, it shows each output it will write before writing anything, and lets you choose where the
+key goes (a drive, or beside the file), whether to split it into shares (each to its own drive), and whether to
+lock it with a passphrase (typed, or made by
+.BR \-\-gen\-passphrase ).
+For .pnp files, it shows which key or shares it will decrypt with. A ciphertext is matched to its key by their
+shared ID, so renamed files still match; a missing key or share is named and the file skipped.
+.PP
+The code cylinder (key drive) is looked for among the folders in
+.I /media/$USER
+and
+.IR /run/media/$USER ,
+preferring one named KEYS; keys are looked for at the top of each, and beside the ciphertext. When not in a
+terminal, or with TERM=dumb,
+.B pnp
+alone prints its usage.
 .SH OPTIONS
 .TP
 .BR \-d ", " \-\-decrypt
 Decrypt instead of encrypting.
 .TP
+.B \-\-verify
+Check
+.I FILE.pnp
+against its key or shares (found as for
+.BR \-d ,
+or given with
+.BR \-k )
+without writing anything: that they come from the same encryption, that their sizes match, and the integrity check
+over every byte. Exit status 0 if the file is whole, 1 if not. For checking archived files now and then, or before
+a real decrypt. A locked key
+.RB ( \-\-protect )
+needs its passphrase, as for decrypting.
+.TP
 .BR \-k ", " \-\-key " \fIKEY\fR"
 The key to decrypt with. Default:
-.IR FILE.pnp.key .
+.IR FILE.pnp.key ,
+or if that doesn't exist, the shares
+.IR FILE.pnp.key.1 ,
+.IR FILE.pnp.key.2 ...
+(share 1 says how many). For a key split with
+.BR \-\-shares ,
+give
+.B \-k
+once per share, in any order; all of them are needed.
 .TP
 .BR \-o ", " \-\-output " \fIOUT\fR"
 Where to write. Encrypting: the ciphertext (the key goes to
 .IR OUT.key ).
 Decrypting: the plaintext (needed when the ciphertext's name doesn't end in .pnp).
 .TP
+.BI \-\-key\-out " PATH"
+Write the key straight into the folder
+.I PATH
+(under its usual name, such as
+.IR FILE.pnp.key ),
+or to the file name
+.IR PATH ,
+instead of beside the ciphertext. The key is built in that folder from the start, so it never touches the
+ciphertext's disk: use it to write keys directly to removable media. With
+.BR \-\-shares ,
+give it once (a folder, for all shares) or once per share (share 1 to the first, and so on).
+.TP
+.BI \-\-shares " N"
+Write the key as
+.I N
+shares (2 to 16) instead of one key file:
+.IR FILE.pnp.key.1 " to " FILE.pnp.key.N .
+Shares 1 to N\-1 are fresh pads from the hardware sources and share N is the pad XOR all of them, so any N\-1
+shares reveal nothing about the key, and all N are needed to decrypt. Losing one share loses the file.
+.TP
+.B \-\-protect
+Also lock the key (or each share) with a passphrase, asked for twice on the terminal. Decrypting sees that a key is
+locked and asks for the passphrase. The passphrase goes through Balloon (BLAKE2b) and then Argon2id, two
+memory-hard password hashes, and the result encrypts the key with ChaCha20, so every guess costs the
+.B \-\-kdf\-memory
+in memory and several seconds. This layer is only computationally secure: it slows down whoever steals a key file,
+but it is not part of the P = NP guarantee. Forgetting the passphrase loses the file. See NOTES.
+.TP
+.BI \-\-kdf\-memory " MIB"
+With
+.BR \-\-protect :
+the Argon2id memory in MiB (default 1024, 8 to 65536; Balloon gets 1/64 of it, at most 16 MiB). The decrypting
+computer needs this much free memory: pnp checks MemAvailable in
+.I /proc/meminfo
+before hashing and stops if there's too little. Argon2id runs one lane per CPU (at most 64), in parallel threads;
+a computer with fewer cores decrypts more slowly, with the same result.
+.TP
+.BI \-\-passphrase\-file " FILE"
+Read the passphrase from the first line of
+.I FILE
+(without its line ending) instead of asking on the terminal. For encrypting, it goes with
+.BR \-\-protect .
+.TP
+.BR \-\-gen\-passphrase [=\fIWORDS\fR]
+Print a passphrase of 7 words (or
+.IR WORDS ,
+5 to 20) from the EFF large word list (7776 words, about 12.9 bits each), chosen with the same hardware sources as
+a pad, then exit. 7 words is about 90 bits, far beyond guessing at the cost
+.B \-\-protect
+puts on each guess; 10 is about 128 bits, as strong as a 128-bit key; 20 is about 256 bits, as strong as the
+ChaCha20 key the lock ends in, which is why it stops there: more words would add nothing. A passphrase you have to
+write down is only as safe as where you keep it.
+.TP
 .BR \-f ", " \-\-force
 Replace output files that already exist. Without it,
 .B pnp
 never replaces a file.
 .TP
+.B \-\-strict
+Refuse to run if the buffers holding pad, file and passphrase bytes can't be locked in memory (kept out of swap),
+instead of only warning. With
+.BR \-\-protect ,
+the passphrase hashes' memory (about
+.I MIB
+plus 16 MiB) must be lockable too, which usually means raising the limit
+.RB ( "ulimit \-l" ,
+or memlock in /etc/security/limits.conf). Also for the interactive mode:
+.BR "pnp \-\-strict" .
+.TP
 .BR \-q ", " \-\-quiet
-Don't print which random sources made the key, or what was written.
+Don't print which random sources made the key, what was written, notes, or the progress line.
+.IP
+Without it, on a terminal,
+.B pnp
+shows a progress line for each file (how far along, how fast, how long is left) and for the passphrase hashing of
+.BR \-\-protect .
+It is never written when standard error isn't a terminal.
 .TP
 .BR \-v ", " \-\-verbose
-Print every random source and its state before encrypting.
+Print every random source and its state before encrypting, and what the sandbox could do (see SANDBOX).
 .TP
 .B \-\-sources
 List the hardware random sources and whether they can be used, then exit (status 1 if none can).
@@ -91,6 +227,9 @@ then log out and back in.
 .TP
 .I /usr/lib/udev/rules.d/60-pnp-hwrng.rules
 That rule.
+.TP
+.IR /media/$USER/* ", " /run/media/$USER/*
+Mounted drives: the interactive mode's candidates for the code cylinder.
 .SH NOTES
 Outputs are written under hidden names
 .RI ( .NAME.XXXXXX.pnp-part )
@@ -99,16 +238,91 @@ key is created readable by its owner only (mode 600), as is a decrypted file.
 .PP
 With
 .BR \-f ,
-if the ciphertext can't be saved after its key was, the key is removed again; an older key it replaced is then gone.
+the files being replaced are first renamed aside (to hidden
+.IR .NAME.XXXXXX.pnp-old )
+and deleted only once every new file is in place. If saving any new file fails, the old ones are put back, so an
+old key is never lost. After a crash at that moment, the old files are still there under those names (see
+RECOVERY).
 .PP
-A one-time pad hides the contents but doesn't detect changes: a modified ciphertext decrypts to modified data without
-any error. The ciphertext and key do record which encryption they belong to, so a wrong key is refused.
+The health tests catch a hardware source that fails (stuck, repeating, badly biased); they can't prove one is truly
+random. In a virtual machine, which
+.B pnp
+detects and mentions, the host can read the machine's memory and decide what RDSEED and /dev/hwrng return. If
+.B pnp
+can't lock its buffers in memory (ulimit \-l too low), it says so: pad and file bytes could then reach swap. With
+.B \-\-strict
+it stops instead.
+.PP
+A one-time pad hides the contents but doesn't detect changes, so
+.B pnp
+adds a one-time MAC (Wegman\-Carter, mod 2^127\-1), keyed by 32 more random bytes from the hardware sources kept in
+the key, with its tag at the end of the ciphertext. Like the pad, it can't be forged with any amount of computing
+power. If the ciphertext or the key has been changed or damaged, decrypting fails and nothing is written. Files from
+pnp 0.1.0\-alpha.2 or older have no MAC; they still decrypt, with a note saying so. The ciphertext and key also
+record which encryption they belong to, so a wrong key is refused.
+.PP
+With
+.BR \-\-protect ,
+the key is first checked to belong to the ciphertext, then the passphrase is asked for; a wrong one is refused at
+once. A strong passphrase matters more than the memory setting: a short or common one can still be guessed.
+.B \-\-gen\-passphrase
+makes a strong one. A key locked with
+.B \-\-protect
+can only be unlocked by pnp 0.1.0\-alpha.4 or newer.
 .PP
 The key is as large as the file. Losing the key means losing the file.
+.PP
+The weakest link is how the keys are physically stored. Nothing can recover a file from its ciphertext alone, so an
+attacker will go after the key instead: anyone who gets a key file (and its passphrase, with
+.BR \-\-protect )
+can read the file. Keep keys offline, apart from the ciphertext, and out of cloud storage and email.
+.SH RECOVERY
+A run that is killed, crashes or loses power can leave hidden files beside its outputs, never a partial file under
+a real name. The next run that writes into or reads from that folder lists them.
+.TP
+.I .NAME.XXXXXX.pnp\-part
+An output that was never finished. Delete it (it may hold pad or plaintext bytes), and run
+.B pnp
+again if
+.I NAME
+is missing.
+.TP
+.I .NAME.XXXXXX.pnp\-old
+An old
+.I NAME
+that
+.B \-f
+moved aside to replace. To undo the interrupted run, put back every
+.I .pnp\-old
+file it left, ciphertext and key (or shares) together, over whatever is under the real names, and delete the
+parts. Or, if
+.B pnp \-\-verify
+says the ciphertext and key under the real names are whole, delete the old ones. Don't mix an old ciphertext with
+a new key.
+.PP
+Encrypting saves the key (or every share) before the ciphertext, so a ciphertext under its real name always has
+its whole key. The file being encrypted is never changed.
+.B pnp
+never deletes or renames leftovers itself. More in docs/recovery.md.
+.SH SANDBOX
+.B pnp
+sets no_new_privs and, from its start, a seccomp filter: every network system call fails, and running a program,
+tracing another process or using io_uring ends
+.B pnp
+at once. Once a command-line encrypt, decrypt or
+.B \-\-verify
+has all its files open, a second filter allows only the system calls the rest of the work makes, and Landlock
+(Linux 5.13+) limits file access to the output folders: creating, renaming and removing files there, nothing
+else. The interactive mode keeps only the first filter, as it goes on to open other files. Each part is used when
+the kernel offers it;
+.B \-v
+says which were.
 .SH EXIT STATUS
 0 on success, 1 on failure, 2 on a usage error.
 .SH SEE ALSO
 .BR getrandom (2),
-.BR udev (7)
+.BR udev (7),
+.BR seccomp (2),
+.BR landlock (7)
 .PP
 https://pnp.regulusarms.com

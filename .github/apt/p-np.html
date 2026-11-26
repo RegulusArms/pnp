@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pnp: if P = NP</title>
+<meta name="description" content="How long a top GPU rack would take to break a pnp key locked with --protect if P = NP, by how good the algorithm is.">
+<style>
+/* Layout: pick an algorithm → plain-language verdicts first, then the chart, then table and assumptions */
+/* Layout: pick an algorithm, read the verdicts, then the chart; same palette and fonts as index.html */
+:root {
+  --bg: #fbfbf9; --panel: #ffffff; --fg: #1d1f21; --muted: #5c6166; --rule: #e2e2dc; --grid: #efefea;
+  --accent: #2563eb; --faint: #c9ccc4; --mark: #9a3412; --link: #9a3412;
+  --bad: #b42318; --bad-bg: #fdecea; --warn: #8a5300; --warn-bg: #fdf3dc; --ok: #4b5056; --ok-bg: #f0f0eb; --good: #17703f; --good-bg: #e4f3e9;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --bg: #15171a; --panel: #1b1e22; --fg: #e6e6e3; --muted: #9aa0a6; --rule: #2c3036; --grid: #22262b;
+  --accent: #5b8ff0; --faint: #3a3f46; --mark: #fb923c; --link: #fb923c;
+  --bad: #f07272; --bad-bg: #3a1f22; --warn: #e2a64a; --warn-bg: #36291a; --ok: #b3b8bf; --ok-bg: #24272c; --good: #4cc286; --good-bg: #1a3227; color-scheme: dark } }
+* { box-sizing: border-box; }
+a { color: var(--link); }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 var(--sans);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 56px; }
+footer { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--rule); padding-top: 16px; }
+main { max-width: 1000px; margin: 0 auto; display: grid; gap: 20px; }
+h1 { font-size: 1.7rem; font-weight: 600; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-size: 1.05rem; font-weight: 600; margin: 0 0 10px; text-wrap: balance; }
+p { margin: 0; max-width: 70ch; }
+.lede { color: var(--muted); }
+code, .mono { font-family: var(--mono); font-size: 0.92em; }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 18px; min-width: 0; }
+.pick { display: grid; gap: 14px; }
+.steprow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.steplabel { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); min-width: 130px; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button { font: 500 0.95rem var(--mono); padding: 6px 12px; border-radius: 6px; border: 1px solid var(--rule); background: var(--bg); color: var(--fg); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.seg button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hint { font-size: 0.85rem; color: var(--muted); }
+.sliders { display: flex; flex-wrap: wrap; gap: 14px 28px; }
+.ctl { display: grid; gap: 2px; min-width: 200px; flex: 1; }
+.ctl label { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.ctl output { font-family: var(--mono); font-size: 0.9rem; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.verdicts { display: grid; gap: 6px; }
+.v { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px 16px; align-items: center; padding: 8px 10px; border-radius: 6px; }
+.v.short { background: var(--bg); border: 1px solid var(--mark); }
+.v .name { min-width: 0; }
+.v .name small { display: block; color: var(--muted); font-size: 0.8rem; }
+.v .time { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.chip { font-size: 0.78rem; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; text-align: center; min-width: 170px; }
+.chip.bad { color: var(--bad); background: var(--bad-bg); } .chip.warn { color: var(--warn); background: var(--warn-bg); }
+.chip.ok { color: var(--ok); background: var(--ok-bg); } .chip.good { color: var(--good); background: var(--good-bg); }
+@media (max-width: 560px) { .v { grid-template-columns: minmax(0, 1fr) auto; } .v .chip { grid-column: 1 / -1; justify-self: start; min-width: 0; } }
+.chartwrap { position: relative; overflow-x: auto; }
+svg { display: block; width: 100%; min-width: 640px; height: auto; }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 8px 10px; font-size: 0.82rem; box-shadow: 0 4px 14px rgb(0 0 0 / 0.14); max-width: 260px; }
+table { border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; width: 100%; }
+th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th { font-weight: 500; color: var(--muted); }
+th:first-child, td:first-child { text-align: left; }
+td.sel, th.sel { background: var(--bg); font-weight: 600; }
+.tablewrap { overflow-x: auto; }
+details summary { cursor: pointer; font-weight: 600; }
+ul { margin: 6px 0 0; padding-left: 20px; max-width: 72ch; }
+li { margin: 5px 0; }
+</style>
+</head>
+<body>
+
+<main>
+  <header style="display:grid;gap:8px">
+    <p style="margin:0"><a href="./">← pnp</a></p>
+    <h1>If P = NP: how long to break a pnp key</h1>
+    <p class="lede">Say someone finds an algorithm that cracks any problem where a guess can be checked. How fast it runs is written <span class="mono">nᵏ</span>: the smaller <span class="mono">k</span>, the better the algorithm. Pick one below and see how long a top Nvidia rack (Vera Rubin NVL72) would take against each pnp key setting. Rough estimates.</p>
+  </header>
+
+  <section class="panel pick" aria-label="Choose the algorithm">
+    <div class="steprow">
+      <span class="steplabel">Algorithm quality</span>
+      <div class="seg" id="seg" role="group" aria-label="Polynomial degree"></div>
+    </div>
+    <p class="hint" id="hint"></p>
+    <div class="sliders">
+      <div class="ctl"><label for="racks">Racks</label><input id="racks" type="range" min="0" max="9" step="1" value="0"><output id="racksOut"></output></div>
+      <div class="ctl"><label for="cc">Constant factor (overhead)</label><input id="cc" type="range" min="-6" max="6" step="1" value="0"><output id="ccOut"></output></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 id="vhead"></h2>
+    <div class="verdicts" id="verdicts"></div>
+  </section>
+
+  <section class="panel">
+    <h2>The same, for every algorithm</h2>
+    <p class="hint" style="margin-bottom:10px">Each grey line is one algorithm; the blue one is your pick. Dots are pnp's settings. Further right means a bigger job to check one guess. Hover for times.</p>
+    <div class="chartwrap" id="wrap">
+      <svg id="chart" viewBox="0 0 960 500" role="img" aria-label="Chart of time to break against how much work checking one guess takes, one line per algorithm"></svg>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+  </section>
+
+  <section class="panel" style="border-left:3px solid var(--mark)">
+    <h2>What this means: common criminals, not the Galactic Federation</h2>
+    <p>The one-time pad itself can't be broken by any of this: without its key, a pnp file stays unreadable at every setting on this page, however good the algorithm and however many racks. What these numbers are about is <b>a stolen key file</b>, locked with <code>--protect</code>, and the encrypted key drive (LUKS) it sits on.</p>
+    <ul>
+      <li><b>Today (no fast P = NP algorithm):</b> with a generated 7-word passphrase, breaking that lock is out of reach for anyone, states included. A weak passphrase you made up yourself can fall in days.</li>
+      <li><b>If P = NP:</b> the lock is only as strong as the algorithm is bad. A thief with one rack is still kept out unless the algorithm is very good; a state with thousands of racks gets in once it's good enough. So <code>--protect</code> and an encrypted key drive stop common criminals, not a state with real resources.</li>
+      <li><b>What stops a state, even if P = NP:</b> keeping the key physically out of reach, and splitting it into shares kept in different places (<code>--shares</code>). Any share set missing one share is pure noise to every algorithm.</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2>Why the memory setting doesn't save the key</h2>
+    <ul>
+      <li><b>An attacker skips the passphrase.</b> With the ciphertext as well as the locked key file, they search for the 256-bit ChaCha20 key directly and check each guess against a few known bytes of the file (a JPEG or PDF header). That check is tiny (about 6.5×10⁴ bit operations) and has no Argon2id or Balloon in it, whatever <code>--kdf-memory</code> was. So the top row above is the one that counts.</li>
+      <li><b>More memory only slows the passphrase route</b>, the other rows. It matters against ordinary guessing (see the last row), not against a P = NP algorithm.</li>
+      <li><b>The pad itself is safe at every setting.</b> Without <code>--protect</code>, or with a key file but no ciphertext, there's nothing to check a guess against: every plaintext of that length is equally possible. No algorithm helps, however good. The same goes for a share set missing one share.</li>
+      <li>A LUKS-encrypted key drive is about as hard as the ChaCha20 shortcut: checking an AES-256 key against one known sector is about the same size of job.</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Table: every setting against every algorithm</summary>
+      <div class="tablewrap" style="margin-top:10px"><table id="tbl"></table></div>
+    </details>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Assumptions</summary>
+      <ul>
+        <li><b>Rack speed:</b> Vera Rubin NVL72, 72 GPUs at about 10<sup>14</sup> 32-bit integer operations per second each: about 2×10<sup>17</sup> bit operations per second per rack. Generous to the attacker. <b>Cost:</b> about $4 million per rack (hardware only; no power, cooling or building), so the slider's prices are a floor. World GDP is about $110 trillion a year.</li>
+        <li><b>Size of the check (n):</b> ChaCha20 shortcut 6.5×10<sup>4</sup> (80 quarter-rounds as gates). Passphrase route: Argon2id at about 3.5×10<sup>6</sup> bit operations per 1 KiB block × 2 passes, plus Balloon-BLAKE2b at about 3×10<sup>6</sup> per 64-byte block over 2 rounds, each times log₂(blocks) for data-dependent memory access in a circuit.</li>
+        <li><b>Time</b> = c·n<sup>k</sup> ÷ (rack speed × racks). The constant c defaults to 1, again generous.</li>
+        <li><b>Ordinary guessing</b> (no P = NP): about 3×10<sup>5</sup> guesses per second per rack at 1 GiB, averaging half of the 7-word passphrase's 2<sup>90.5</sup> possibilities.</li>
+        <li>"A lifetime" means 80 years.</li>
+      </ul>
+    </details>
+  </section>
+  <footer>
+    <a href="./">Install pnp</a> · Source and documentation: <a href="https://github.com/RegulusArms/pnp">github.com/RegulusArms/pnp</a>
+    (<a href="https://github.com/RegulusArms/pnp/blob/main/docs/threat-model.md">threat model</a>,
+    <a href="https://github.com/RegulusArms/pnp/blob/main/docs/code-cylinder.md">key drive</a>)
+  </footer>
+</main>
+
+<script>
+const YEAR = 3.156e7, DAY = 86400, LIFE = 80 * YEAR, UNIVERSE = 4.35e17, BITOPS_PER_RACK = 2e17;
+function kdfN(mib) {
+  const blocks = mib * 1024, argon = 2 * blocks * 3.5e6 * Math.log2(blocks);
+  const bBlocks = Math.min(mib * 1048576 / 64, 16 * 1048576) / 64;
+  return argon + bBlocks * 3e6 * Math.log2(bBlocks);
+}
+const OPTIONS = [
+  { tag: "shortcut", name: "ChaCha20 shortcut", sub: "what an attacker with the ciphertext would use, at any memory setting", n: 6.5e4, shortcut: true },
+  { tag: "8M", name: "Passphrase, 8 MiB", sub: "--kdf-memory 8 (the minimum)", n: kdfN(8) },
+  { tag: "64M", name: "Passphrase, 64 MiB", sub: "--kdf-memory 64", n: kdfN(64) },
+  { tag: "256M", name: "Passphrase, 256 MiB", sub: "--kdf-memory 256", n: kdfN(256) },
+  { tag: "1G", name: "Passphrase, 1 GiB", sub: "the default", n: kdfN(1024), def: true },
+  { tag: "4G", name: "Passphrase, 4 GiB", sub: "--kdf-memory 4096", n: kdfN(4096) },
+  { tag: "16G", name: "Passphrase, 16 GiB", sub: "--kdf-memory 16384", n: kdfN(16384) },
+  { tag: "64G", name: "Passphrase, 64 GiB", sub: "--kdf-memory 65536 (the maximum)", n: kdfN(65536) },
+];
+const DEGREES = [1, 2, 3, 4, 5, 6];
+const DESC = { 1: "the best possible: as fast as checking one guess", 2: "very good", 3: "good", 4: "middling", 5: "poor", 6: "very poor" };
+let K = 3;
+const $ = id => document.getElementById(id);
+const racksEl = $("racks"), ccEl = $("cc"), svg = $("chart"), tip = $("tip"), wrap = $("wrap");
+const W = 960, H = 500, M = { l: 132, r: 30, t: 20, b: 62 };
+const XMIN = 4, XMAX = 17, YMIN = -10, YMAX = 32;
+const x = l => M.l + (l - XMIN) / (XMAX - XMIN) * (W - M.l - M.r);
+const y = l => M.t + (YMAX - Math.min(YMAX, Math.max(YMIN, l))) / (YMAX - YMIN) * (H - M.t - M.b);
+const sup = n => String(n).replace(/-/g, "⁻").replace(/\d/g, d => "⁰¹²³⁴⁵⁶⁷⁸⁹"[d]);
+function sci(v) { const e = Math.floor(Math.log10(v)), m = v / 10 ** e; return (m >= 9.95 ? "10" : m.toFixed(1).replace(/\.0$/, "") + "×10") + sup(m >= 9.95 ? e + 1 : e); }
+function human(lsec) {
+  if (lsec > 300) return "over 10³⁰⁰ years";
+  const s = 10 ** lsec;
+  if (s < 1e-6) return s * 1e9 < 0.01 ? "under 0.01 ns" : (s * 1e9).toPrecision(2) + " ns";
+  if (s < 1e-3) return (s * 1e6).toPrecision(2) + " µs";
+  if (s < 1) return (s * 1e3).toPrecision(2) + " ms";
+  if (s < 120) return s.toPrecision(2) + " seconds";
+  if (s < 7200) return (s / 60).toPrecision(2) + " minutes";
+  if (s < 172800) return (s / 3600).toPrecision(2) + " hours";
+  if (s < YEAR) return (s / DAY).toPrecision(2) + " days";
+  const yr = s / YEAR;
+  if (yr < 1e4) return yr.toPrecision(2) + " years";
+  if (yr < 1e6) return Math.round(yr / 1e3) + " thousand years";
+  if (yr < 1e9) return (yr / 1e6).toPrecision(2) + " million years";
+  return sci(yr) + " years";
+}
+function verdict(lsec) {
+  const s = 10 ** Math.min(lsec, 300);
+  if (s < DAY) return ["bad", "Broken within a day"];
+  if (s < LIFE) return ["warn", "Broken within a lifetime"];
+  if (s < UNIVERSE) return ["ok", "Outlasts a lifetime"];
+  return ["good", "Outlasts the universe"];
+}
+const RACK_USD = 4e6, WORLD_GDP = 1.1e14;
+function money(usd) {
+  const units = [[1e15, "quadrillion"], [1e12, "trillion"], [1e9, "billion"], [1e6, "million"]];
+  const [v, u] = units.find(([v]) => usd >= v);
+  return "~$" + +(usd / v).toPrecision(2) + " " + u + (usd > WORLD_GDP ? " (more than the world's yearly GDP)" : "");
+}
+const params = () => ({ racks: 10 ** +racksEl.value, c: 10 ** +ccEl.value });
+const logT = (ln, k, p) => Math.log10(p.c) + k * ln - Math.log10(BITOPS_PER_RACK * p.racks);
+const bruteLog = p => Math.log10(2 ** 89.5 / (3.1e5 * p.racks));
+const col = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function el(tag, attrs, text) { const e = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const a in attrs) e.setAttribute(a, attrs[a]); if (text != null) e.textContent = text; return e; }
+const mono = "ui-monospace, SF Mono, Menlo, Consolas, monospace";
+const YTICKS = [[-9, "1 nanosecond"], [-3, "1 millisecond"], [0, "1 second"], [Math.log10(DAY), "1 day"], [Math.log10(YEAR), "1 year"],
+  [Math.log10(1e6 * YEAR), "1 million years"], [Math.log10(UNIVERSE), "age of universe"], [Math.log10(UNIVERSE) + 12, "10¹² × universe"]];
+
+$("seg").innerHTML = DEGREES.map(k => `<button type="button" id="deg${k}" data-k="${k}" aria-pressed="${k === K}">n${sup(k)}</button>`).join("");
+$("seg").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { K = +b.dataset.k; render(); } });
+
+function render() {
+  const p = params();
+  for (const b of $("seg").children) b.setAttribute("aria-pressed", +b.dataset.k === K);
+  $("hint").textContent = `n${sup(K)}: ${DESC[K]}.` + (K === 1 ? "" : ` Checking a guess takes n steps; this algorithm takes n${sup(K)}.`);
+  $("racksOut").textContent = (p.racks === 1 ? "1 rack" : p.racks <= 1000 ? p.racks.toLocaleString("en-US") + " racks" : sci(p.racks).replace(/^1×/, "") + " racks") + ", " + money(p.racks * RACK_USD);
+  $("ccOut").textContent = p.c === 1 ? "none (×1)" : p.c > 1 ? "×" + sci(p.c).replace(/^1×/, "") + " (slower than estimated)" : "÷" + sci(1 / p.c).replace(/^1×/, "") + " (faster than estimated)";
+  /* verdicts */
+  $("vhead").textContent = `With an n${sup(K)} algorithm and ${p.racks === 1 ? "one rack" : (p.racks <= 1000 ? p.racks.toLocaleString("en-US") : sci(p.racks).replace(/^1×/, "")) + " racks"} (${money(p.racks * RACK_USD).replace(/ \(.*\)$/, "")}), breaking each setting takes:`;
+  const bl = bruteLog(p), [bc, bt] = verdict(bl);
+  $("verdicts").innerHTML = OPTIONS.map(o => {
+    const t = logT(Math.log10(o.n), K, p), [c, txt] = verdict(t);
+    return `<div class="v${o.shortcut ? " short" : ""}"><div class="name">${o.name}<small>${o.sub}</small></div><div class="time">${human(t)}</div><span class="chip ${c}">${txt}</span></div>`;
+  }).join("") + `<div class="v"><div class="name">For comparison: ordinary guessing, no P = NP<small>1 GiB, 7-word generated passphrase</small></div><div class="time">${human(bl)}</div><span class="chip ${bc}">${bt}</span></div>`;
+  drawChart(p);
+  /* table */
+  let t = "<tr><th>Setting</th>" + DEGREES.map(k => `<th class="${k === K ? "sel" : ""}">n${sup(k)}</th>`).join("") + "</tr>";
+  for (const o of OPTIONS) t += `<tr><td>${o.name}</td>` + DEGREES.map(k => `<td class="${k === K ? "sel" : ""}">${human(logT(Math.log10(o.n), k, p))}</td>`).join("") + "</tr>";
+  $("tbl").innerHTML = t;
+}
+
+function drawChart(p) {
+  svg.textContent = "";
+  const muted = col("--muted"), grid = col("--grid"), fg = col("--fg"), faint = col("--faint"), accent = col("--accent"), panel = col("--panel"), mark = col("--mark");
+  /* verdict bands */
+  const bands = [[YMIN, Math.log10(DAY), "--bad-bg", "--bad", "broken within a day"], [Math.log10(DAY), Math.log10(LIFE), "--warn-bg", "--warn", "within a lifetime"],
+    [Math.log10(LIFE), Math.log10(UNIVERSE), "--ok-bg", "--ok", "outlasts a lifetime"], [Math.log10(UNIVERSE), YMAX, "--good-bg", "--good", "outlasts the universe"]];
+  for (const [a, b, bg, fgv, label] of bands) {
+    svg.append(el("rect", { x: M.l, y: y(b), width: W - M.l - M.r, height: y(a) - y(b), fill: col(bg) }));
+    svg.append(el("text", { x: W - M.r - 8, y: y(b) + 16, "text-anchor": "end", fill: col(fgv), "font-size": 11.5, "font-weight": 600 }, label));
+  }
+  for (const [l, name] of YTICKS) {
+    svg.append(el("line", { x1: M.l, x2: W - M.r, y1: y(l), y2: y(l), stroke: panel, "stroke-width": 1, "stroke-opacity": 0.7 }));
+    svg.append(el("text", { x: M.l - 8, y: y(l) + 4, "text-anchor": "end", fill: muted, "font-size": 11.5 }, name));
+  }
+  svg.append(el("text", { x: 14, y: (M.t + H - M.b) / 2, transform: `rotate(-90 14 ${(M.t + H - M.b) / 2})`, "text-anchor": "middle", fill: muted, "font-size": 12 }, "time to break, one rack ↑"));
+  /* settings along the bottom */
+  for (const o of OPTIONS) {
+    const ox = x(Math.log10(o.n));
+    svg.append(el("line", { x1: ox, x2: ox, y1: H - M.b, y2: H - M.b + 6, stroke: muted, "stroke-width": 1 }));
+    svg.append(el("text", { x: ox, y: H - M.b + 19, "text-anchor": "middle", fill: o.shortcut ? mark : fg, "font-size": 11, "font-weight": o.shortcut || o.def ? 600 : 400, "font-family": mono }, o.tag));
+  }
+  svg.append(el("line", { x1: M.l, x2: W - M.r, y1: H - M.b, y2: H - M.b, stroke: muted, "stroke-width": 1 }));
+  svg.append(el("text", { x: (M.l + W - M.r) / 2, y: H - 12, "text-anchor": "middle", fill: muted, "font-size": 12 }, "work to check one guessed key →  (more memory moves the passphrase settings right)"));
+  /* algorithm lines */
+  const cp = el("clipPath", { id: "plot" }); cp.append(el("rect", { x: M.l, y: M.t, width: W - M.l - M.r, height: H - M.t - M.b })); svg.append(cp);
+  const order = DEGREES.filter(k => k !== K).concat(K);
+  for (const k of order) {
+    const sel = k === K;
+    svg.append(el("line", { x1: x(XMIN), y1: y(logT(XMIN, k, p)), x2: x(XMAX), y2: y(logT(XMAX, k, p)), stroke: sel ? accent : faint, "stroke-width": sel ? 3 : 1.5, "clip-path": "url(#plot)" }));
+    const lTop = (YMAX - Math.log10(p.c) + Math.log10(BITOPS_PER_RACK * p.racks)) / k;
+    const lx = lTop < XMAX ? x(lTop) : x(XMAX), ly = lTop < XMAX ? y(YMAX) : y(logT(XMAX, k, p));
+    if (lTop > XMIN + 0.3) {
+      svg.append(el("rect", { x: lx - 31, y: ly + 3, width: 27, height: 17, rx: 3, fill: sel ? accent : panel }));
+      svg.append(el("text", { x: lx - 17.5, y: ly + 16, "text-anchor": "middle", fill: sel ? col("--panel") : muted, "font-size": 12, "font-weight": 600, "font-family": mono }, "n" + sup(k)));
+    }
+  }
+  /* dots for the chosen algorithm at every setting */
+  for (const o of OPTIONS) {
+    const t = logT(Math.log10(o.n), K, p);
+    if (t < YMIN || t > YMAX) continue;
+    svg.append(el("circle", { cx: x(Math.log10(o.n)), cy: y(t), r: o.shortcut ? 6.5 : 5, fill: o.shortcut ? mark : accent, stroke: panel, "stroke-width": 2 }));
+  }
+  const s0 = OPTIONS[0], t0 = logT(Math.log10(s0.n), K, p);
+  if (t0 >= YMIN && t0 <= YMAX) svg.append(el("text", { x: x(Math.log10(s0.n)) + 11, y: y(t0) + 4, fill: fg, "font-size": 12, "font-weight": 600 }, human(t0)));
+  svg.append(el("line", { id: "xh", x1: 0, x2: 0, y1: M.t, y2: H - M.b, stroke: muted, "stroke-width": 1, visibility: "hidden" }));
+}
+
+function hover(ev) {
+  const r = svg.getBoundingClientRect(), sx = (ev.clientX - r.left) * W / r.width, xh = $("xh");
+  let best = null, bd = 1e9;
+  for (const o of OPTIONS) { const d = Math.abs(x(Math.log10(o.n)) - sx); if (d < bd) { bd = d; best = o; } }
+  if (!best || bd > 24 || sx < M.l || sx > W - M.r) { tip.hidden = true; xh.setAttribute("visibility", "hidden"); return; }
+  const p = params(), ln = Math.log10(best.n);
+  xh.setAttribute("x1", x(ln)); xh.setAttribute("x2", x(ln)); xh.setAttribute("visibility", "visible");
+  tip.innerHTML = `<b>${best.name}</b><div style="color:var(--muted);margin-bottom:5px">${best.sub}</div>` +
+    DEGREES.map(k => `<div style="display:flex;justify-content:space-between;gap:12px;${k === K ? "font-weight:600" : ""}"><span class="mono">n${sup(k)}</span><span class="mono">${human(logT(ln, k, p))}</span></div>`).join("");
+  tip.hidden = false;
+  const px = ev.clientX - wrap.getBoundingClientRect().left + wrap.scrollLeft;
+  const left = px + 16 + tip.offsetWidth > wrap.scrollLeft + wrap.clientWidth ? px - tip.offsetWidth - 16 : px + 16;
+  tip.style.left = Math.max(0, left) + "px"; tip.style.top = "24px";
+}
+svg.addEventListener("pointermove", hover);
+svg.addEventListener("pointerleave", () => { tip.hidden = true; $("xh").setAttribute("visibility", "hidden"); });
+racksEl.addEventListener("input", render); ccEl.addEventListener("input", render);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+render();
+</script>
+</body>
+</html>

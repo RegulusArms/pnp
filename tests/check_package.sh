@@ -41,6 +41,11 @@ if su pnp-pkg-test -c "pnp --sources" >/tmp/sources.txt 2>&1; then
     su pnp-pkg-test -c "head -c 1000000 /dev/urandom > $D/f && cp $D/f $D/orig && pnp -q $D/f && rm $D/f && pnp -q -d $D/f.pnp"
     check 'cmp -s "$D/f" "$D/orig" && [[ $(stat -c %a "$D/f.pnp.key") == 600 ]]' \
         "as a normal user, a file encrypts and decrypts with the installed pnp (key mode 600)"
+    su pnp-pkg-test -c "rm $D/f* && pnp -q --gen-passphrase > $D/pass && head -c 100000 /dev/urandom > $D/f &&
+        cp $D/f $D/orig && pnp -q --protect --kdf-memory 8 --passphrase-file $D/pass $D/f && rm $D/f &&
+        pnp -q -d --passphrase-file $D/pass $D/f.pnp"
+    check 'cmp -s "$D/f" "$D/orig" && [[ $(head -c 8 "$D/f.pnp.key") == PNPKP002 && $(wc -w <"$D/pass") == 7 ]]' \
+        "--gen-passphrase and --protect work with the installed pnp"
 else
     cat /tmp/sources.txt
     check '! su pnp-pkg-test -c "echo x > $D/f && pnp $D/f" 2>/dev/null && [[ ! -e $D/f.pnp ]]' \

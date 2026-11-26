@@ -7,7 +7,9 @@
  *   RDSEED      the x86 CPU instruction giving its entropy source's conditioned output (not RDRAND, which is the
  *               output of a deterministic generator)
  * Each source's raw bytes go through SP 800-90B start-up and continuous health tests. A source failing at start-up
- * isn't used; a source failing while the pad is made stops the whole run (the caller deletes what it wrote).
+ * isn't used; a source failing while the pad is made stops the whole run (the caller deletes what it wrote). These
+ * tests detect failures (stuck, repeating, badly biased output); no test can prove a source is unpredictable, so
+ * the guarantee still rests on at least one source being a real random source.
  * The pad is the XOR of every source in use and getrandom(): as long as the sources are independent, the result is
  * at least as unpredictable as the best of them, so one weak or backdoored source can't make it worse.
  * With no healthy hardware source, the caller refuses to encrypt: getrandom() alone is never enough. */
@@ -92,6 +94,47 @@ static int read_full(int fd, uint8_t *buf, size_t n)
         }
         buf += r;
         n -= (size_t)r;
+    }
+    return 0;
+}
+
+/* Whether pnp is running in a virtual machine: the CPUID "hypervisor present" bit (with the hypervisor's vendor
+ * string), or a virtio hwrng (fed by the host). Writes a name into what. A virtual machine's host can read its
+ * memory and decide what RDSEED and /dev/hwrng return, so the pad is only as secret as the host is honest. */
+int pnp_in_vm(char *what, size_t len)
+{
+#ifdef PNP_TEST
+    const char *fake = getenv("PNP_TEST_VM");
+    if (fake) { /* test hook: "" for a physical machine, else the hypervisor's name */
+        snprintf(what, len, "%s", fake);
+        return what[0] != 0;
+    }
+#endif
+#ifdef PNP_HAVE_X86
+    unsigned a, b, c, d;
+    if (__get_cpuid(1, &a, &b, &c, &d) && (c >> 31) & 1) {
+        unsigned r[3];
+        char v[13];
+        __cpuid(0x40000000, a, r[0], r[1], r[2]);
+        memcpy(v, r, 12);
+        v[12] = 0;
+        for (int i = 0; i < 12; i++)
+            if (v[i] && (v[i] < 0x20 || v[i] > 0x7e))
+                v[i] = '?';
+        snprintf(what, len, "%s", v[0] ? v : "unknown hypervisor");
+        return 1;
+    }
+#endif
+    char cur[64] = "";
+    FILE *f = fopen(HWRNG_CURRENT, "re");
+    if (f) {
+        if (!fgets(cur, sizeof cur, f))
+            cur[0] = 0;
+        fclose(f);
+    }
+    if (strstr(cur, "virtio")) {
+        snprintf(what, len, "virtio-rng");
+        return 1;
     }
     return 0;
 }
@@ -226,6 +269,53 @@ static void open_rdseed(struct pnp_source *s)
     s->state = PNP_SRC_ABSENT;
     snprintf(s->detail, sizeof s->detail, "not supported by this CPU");
 }
+
+#ifdef PNP_TEST
+/* Test builds only: one source's raw output, for measuring it with NIST's SP 800-90B entropy assessment
+ * (tests/entropy/assess.sh, docs/entropy.md). The source is opened and start-up tested as for a pad, then n bytes
+ * are written to out exactly as read: no other source, no getrandom, nothing mixed in. The continuous health tests
+ * still watch them, and a failure stops the dump. */
+int pnp_rng_dump(const char *which, uint64_t n, int out)
+{
+    struct pnp_source s;
+    memset(&s, 0, sizeof s);
+    if (strcmp(which, "hwrng") == 0)
+        open_hwrng(&s);
+    else if (strcmp(which, "rdseed") == 0)
+        open_rdseed(&s);
+    else {
+        fprintf(stderr, "pnp: PNP_TEST_DUMP takes hwrng or rdseed\n");
+        return -1;
+    }
+    if (s.state != PNP_SRC_OK) {
+        fprintf(stderr, "pnp: %s isn't usable: %s\n", s.name, s.detail);
+        if (s.fd >= 0)
+            close(s.fd);
+        return -1;
+    }
+    static uint8_t buf[65536];
+    int ret = 0;
+    while (n && ret == 0) {
+        size_t k = n < sizeof buf ? (size_t)n : sizeof buf;
+        if (source_read(&s, buf, k) < 0 || pnp_health_feed(&s.health, buf, k) < 0) {
+            fprintf(stderr, "pnp: %s failed while dumping\n", s.name);
+            ret = -1;
+        } else {
+            for (size_t w = 0; w < k && ret == 0;) {
+                ssize_t r = write(out, buf + w, k - w);
+                if (r < 0 && errno != EINTR)
+                    ret = -1;
+                else if (r > 0)
+                    w += (size_t)r;
+            }
+            n -= k;
+        }
+    }
+    if (s.fd >= 0)
+        close(s.fd);
+    return ret;
+}
+#endif
 
 void pnp_rng_open(struct pnp_rng *rng)
 {
