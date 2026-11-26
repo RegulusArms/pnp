@@ -1,5 +1,13 @@
 # pnp
 
+[![Release build](https://img.shields.io/github/actions/workflow/status/RegulusArms/pnp/deb.yml?branch=main&label=release%20build)](https://github.com/RegulusArms/pnp/actions/workflows/deb.yml?query=branch%3Amain)
+[![Dev build](https://img.shields.io/github/actions/workflow/status/RegulusArms/pnp/deb.yml?branch=DEV&label=dev%20build)](https://github.com/RegulusArms/pnp/actions/workflows/deb.yml?query=branch%3ADEV)
+[![Release](https://img.shields.io/github/v/release/RegulusArms/pnp?include_prereleases&sort=semver&filter=v*)](https://github.com/RegulusArms/pnp/releases)
+[![apt repository](https://img.shields.io/badge/apt-pnp.regulusarms.com-blue?logo=debian&logoColor=white)](#installing)
+[![Runs on](https://img.shields.io/badge/runs%20on-Debian%2012%2B%20%C2%B7%20Ubuntu%2022.04%2B%20%C2%B7%20Mint%2021%2B%20%C2%B7%20KDE%20neon-A81D33?logo=debian&logoColor=white)](#installing)
+[![C11, libc only](https://img.shields.io/badge/C11-libc%20only-A8B9CC?logo=c&logoColor=white)](#building-from-source)
+[![License: MIT](https://img.shields.io/github/license/RegulusArms/pnp)](LICENSE)
+
 **Version 0.1.0-alpha.2**: early alpha. See [Installing](#installing).
 
 A command-line file encryption tool for Debian, Ubuntu, Linux Mint and other Debian-based systems, built to stay
