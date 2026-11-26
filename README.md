@@ -8,7 +8,7 @@
 [![C11, libc only](https://img.shields.io/badge/C11-libc%20only-A8B9CC?logo=c&logoColor=white)](#building-from-source)
 [![License: MIT](https://img.shields.io/github/license/RegulusArms/pnp)](LICENSE)
 
-**Version 0.1.0-alpha.4**: early alpha. See [Installing](#installing).
+**Version 0.1.0-alpha.5**: early alpha. See [Installing](#installing).
 
 A command-line file encryption tool for Debian, Ubuntu, Linux Mint and other Debian-based systems, built to stay
 secure even if P = NP.
@@ -100,8 +100,18 @@ A one-time pad is only unbreakable if its key is truly random. pnp reads the har
 - **RDSEED**: the random number instruction built into Intel and AMD CPUs.
 
 pnp checks each source's output as it reads it, using the start-up and continuous health tests from NIST SP
-800-90B. It then combines all the sources with XOR, together with the kernel's own generator. Even if one source
-were weak, the key would be as unpredictable as the best of them.
+800-90B. It then combines all the sources with XOR, together with the kernel's own generator. As long as the
+sources are independent, the key is at least as unpredictable as the best of them, so one weak or dishonest source
+can't spoil it.
+
+What the health tests can't do is prove a source is truly random. They catch a source that breaks (stuck, repeating,
+badly biased), but a source that secretly ran a hidden algorithm would pass them. So pnp's information-theoretic
+guarantee rests on at least one of your hardware sources really being random. The sources pnp used are named every
+time it makes a key (`pnp --sources -v` lists them with their drivers).
+
+**In a virtual machine**, the host decides what RDSEED and `/dev/hwrng` return, and can read the machine's memory
+anyway, pad and file included. pnp says so when it detects one. Encrypt on a physical machine unless the host is
+yours.
 
 **If no hardware source works, pnp refuses to encrypt.** Software randomness alone isn't safe if P = NP. Decrypting
 needs no random source.
@@ -121,7 +131,7 @@ Type `pnp` on its own in a terminal and it opens a file browser for the folder y
    / __ \/ | / / __ \
   / /_/ /  |/ / /_/ /
  / ____/ /|  / ____/
-/_/   /_/ |_/_/          p = np. now what?   pnp 0.1.0-alpha.4
+/_/   /_/ |_/_/          p = np. now what?   pnp 0.1.0-alpha.5
 Folder:        /home/you/documents
 Code cylinder: /media/you/KEYS
 --------------------------------------------------------------------------------
@@ -148,6 +158,20 @@ and its key to /media/you/KEYS/report.pdf.pnp.key
   of each drive and beside the `.pnp` file.
 
 It runs the same encryption and decryption as the commands above, with the same checks.
+
+## What the guarantee rests on
+
+pnp's encryption and integrity check are information-theoretically secure, which no amount of computing power
+(or proof that P = NP) can change, **as long as**:
+
+1. **the key is truly random:** at least one hardware source is (see above);
+2. **the key stays secret:** stored apart from the ciphertext, in your physical custody;
+3. **the key is used once:** pnp makes a new one for every file and never reuses it;
+4. **the computer encrypting or decrypting is trustworthy:** malware on it, or the host of a virtual machine, sees
+   the file and the key in memory, whatever the mathematics says.
+
+The passphrase lock (`--protect`) and the way pnp is delivered (the signed apt repository, HTTPS) are only
+computationally secure, as their own sections explain.
 
 ## Options
 

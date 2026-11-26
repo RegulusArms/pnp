@@ -195,7 +195,17 @@ key is created readable by its owner only (mode 600), as is a decrypted file.
 .PP
 With
 .BR \-f ,
-if the ciphertext can't be saved after its key (or shares) were, they are removed again; an older key it replaced is then gone.
+the files being replaced are first renamed aside (to hidden
+.IR .NAME.XXXXXX.pnp-old )
+and deleted only once every new file is in place. If saving any new file fails, the old ones are put back, so an
+old key is never lost. After a crash at that moment, the old files are still there under those names.
+.PP
+The health tests catch a hardware source that fails (stuck, repeating, badly biased); they can't prove one is truly
+random. In a virtual machine, which
+.B pnp
+detects and mentions, the host can read the machine's memory and decide what RDSEED and /dev/hwrng return. If
+.B pnp
+can't lock its buffers in memory (ulimit \-l too low), it says so: pad and file bytes could then reach swap.
 .PP
 A one-time pad hides the contents but doesn't detect changes, so
 .B pnp

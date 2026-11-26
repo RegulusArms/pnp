@@ -63,5 +63,7 @@ int pnp_rng_fill(struct pnp_rng *rng, uint8_t *buf, size_t n, char *err, size_t 
 void pnp_rng_close(struct pnp_rng *rng);
 /* "/dev/hwrng (ccp-1-rng) + RDSEED + getrandom" */
 void pnp_rng_describe(const struct pnp_rng *rng, char *out, size_t outlen);
+/* 1 if this looks like a virtual machine (the hypervisor's name in what), else 0 */
+int pnp_in_vm(char *what, size_t len);
 
 #endif

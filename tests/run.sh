@@ -3,8 +3,10 @@
 # build/test_kdf and build/xorcheck, and script(1) from bsdutils for the interactive mode).
 # The tests run build/pnp-test, the same program with test hooks: PNP_TEST_HWRNG points /dev/hwrng at a file or FIFO
 # and PNP_TEST_NO_RDSEED turns RDSEED off (src/rng.c), so they give the same results on every machine, with or
-# without hardware random sources; PNP_TEST_MEMINFO replaces /proc/meminfo (src/protect.c); PNP_TEST_MEDIA replaces
-# /media/$USER (src/tui.c). They don't touch the real /dev/hwrng or drives.
+# without hardware random sources; PNP_TEST_VM says whether to act as a virtual machine (src/rng.c);
+# PNP_TEST_MEMINFO replaces /proc/meminfo (src/protect.c); PNP_TEST_MEDIA replaces /media/$USER and PNP_TEST_FDS lists
+# the files still open on quitting (src/tui.c). They don't touch the real /dev/hwrng or drives. PNP_SANITIZE=1 (make
+# sanitize) skips the one check AddressSanitizer makes meaningless.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 B="$PWD/build"
@@ -15,6 +17,7 @@ check() { if eval "$1"; then echo "PASS $2"; else echo "FAIL $2"; fails=$((fails
 T="$(mktemp -d)"
 trap 'kill $(jobs -p) 2>/dev/null; chmod -R u+rwX "$T"; rm -rf "$T"' EXIT
 export PNP_TEST_NO_RDSEED=1
+export PNP_TEST_VM= # a physical machine, even when the tests run in one (CI runners are virtual machines)
 head -c $((8 << 20)) /dev/urandom >"$T/rng"         # the fake hardware source: 8 MiB of random bytes
 export PNP_TEST_HWRNG="$T/rng"
 
@@ -433,6 +436,59 @@ kill "$writer" 2>/dev/null
 wait "$writer" 2>/dev/null
 check '[[ $status == 143 && ! -e "$T/w/f.pnp" && ! -e "$T/w/f.pnp.key" ]] && no_parts' \
     "SIGTERM while waiting for the source removes the parts, writes nothing, and exits by the signal (143)"
+
+# --- replacing (-f) never loses an old key, even if saving the new ciphertext fails after the new key is in place
+if [[ $(id -u) != 0 ]]; then
+    fresh
+    mkdir "$T/w/c" "$T/w/k"
+    head -c 1000 /dev/urandom >"$T/w/small"
+    "$PNP" -q --key-out "$T/w/k" -o "$T/w/c/f.pnp" "$T/w/small"
+    cp "$T/w/c/f.pnp" "$T/w/old.pnp" && cp "$T/w/k/f.pnp.key" "$T/w/old.key"
+    head -c $((4 << 20)) /dev/urandom >"$T/w/big"
+    rm -f "$T/fifo" "$T/gate" && mkfifo "$T/fifo" "$T/gate"
+    ( head -c $((1 << 20)) "$T/rng"; read -r _ <"$T/gate"; cat "$T/rng" ) >"$T/fifo" &
+    writer=$!
+    PNP_TEST_HWRNG="$T/fifo" "$PNP" -q -f --key-out "$T/w/k" -o "$T/w/c/f.pnp" "$T/w/big" 2>"$T/err" &
+    pid=$!
+    for _ in $(seq 600); do # pnp has read the first MiB and waits for more: make the ciphertext's folder read-only
+        part="$(find "$T/w/k" -name '.f.pnp.key.*.pnp-part')"
+        [[ -n "$part" && $(stat -c %s "$part" 2>/dev/null || echo 0) -ge $((24 + 15 * 65536)) ]] && break
+        sleep 0.05
+    done
+    chmod a-w "$T/w/c"
+    echo go >"$T/gate"
+    wait "$pid"
+    status=$?
+    wait "$writer" 2>/dev/null
+    chmod u+w "$T/w/c"
+    check '[[ $status == 1 ]] && cmp -s "$T/w/k/f.pnp.key" "$T/w/old.key" && cmp -s "$T/w/c/f.pnp" "$T/w/old.pnp" &&
+           ! find "$T/w" -name "*.pnp-old" | grep -q .' \
+        "-f: when the new ciphertext can't be saved, the old key and ciphertext are put back as they were"
+    check '"$PNP" -q -d -k "$T/w/k/f.pnp.key" -o "$T/w/back" "$T/w/c/f.pnp" && cmp -s "$T/w/back" "$T/w/small"' \
+        "-f: and they still decrypt"
+    if [[ -z "${PNP_SANITIZE:-}" ]]; then # AddressSanitizer replaces mlock() with a no-op, so it can't fail there
+        check '(ulimit -l 0; "$PNP" -f "$T/w/small" 2>"$T/err"; grep -q "couldn.t lock its buffers" "$T/err")' \
+            "when its buffers can't be locked in memory (ulimit -l 0), pnp says so"
+    fi
+else
+    echo "SKIP -f rollback and memory-locking checks (running as root, which ignores folder permissions and ulimit -l)"
+fi
+fresh
+echo one >"$T/w/f" && "$PNP" -q "$T/w/f" && echo two >"$T/w/f"
+check '"$PNP" -q -f "$T/w/f" && ! find "$T/w" -name "*.pnp-old" | grep -q . && "$PNP" -q -f -d "$T/w/f.pnp" &&
+       [[ $(cat "$T/w/f") == two ]]' "-f replaces the old ciphertext and key, and leaves none of the old files behind"
+check 'PNP_TEST_VM=KVMKVMKVM "$PNP" -f "$T/w/f" 2>"$T/err" && grep -q "virtual machine (KVMKVMKVM).*host can read" "$T/err" &&
+       "$PNP" -f "$T/w/f" 2>"$T/err" && ! grep -q "virtual machine" "$T/err"' \
+    "in a virtual machine, pnp warns that the host can read the pad; on a physical machine it doesn't"
+
+# --- the interactive mode closes the random sources after each file (it keeps running between them).
+# PNP_TEST_FDS: on quitting, pnp-test lists what it still has open (pnp is non-dumpable, so /proc can't be read
+# from outside).
+rm -rf "$T/tw" "$T/media" && mkdir -p "$T/tw" "$T/media/KEYS" && echo x >"$T/tw/a.txt" && echo y >"$T/tw/b.txt"
+(cd "$T/tw" && printf 'j\rjjj\r\njj\rjjj\r\nq' |
+    TERM=xterm PNP_TEST_MEDIA="$T/media" PNP_TEST_FDS="$T/fds" script -qec "$PNP" "$T/tui.out" >/dev/null 2>&1)
+check '[[ -f "$T/tw/a.txt.pnp" && -f "$T/tw/b.txt.pnp" && -s "$T/fds" ]] && ! grep -q "$T/rng" "$T/fds"' \
+    "interactive: after encrypting two files, no random source is left open"
 
 # --- the shipped binary has no test hooks
 check 'grep -qa PNP_TEST_HWRNG "$B/pnp-test" && ! grep -qa PNP_TEST_ "$B/pnp"' \

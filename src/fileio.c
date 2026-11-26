@@ -7,7 +7,8 @@
  *     without it get link() + unlink() (also refuses a taken name); ones without hard links either (FAT, some
  *     network filesystems) get a check-then-rename, which can race with another program creating the same name in
  *     between. That's the best those filesystems allow.
- *   - replacing (-f): rename(), atomic: the old file stays whole until the new one takes its name.
+ *   - replacing (-f): rename(), atomic: the old file stays whole until the new one takes its name. With several
+ *     outputs (encrypting), the old files are first moved aside instead (pnp_out_aside, below).
  * On failure only the part is removed. */
 #define _GNU_SOURCE
 #include "fileio.h"
@@ -59,6 +60,19 @@ char *pnp_base_of(const char *path)
     return b;
 }
 
+/* a random 6-letter suffix for hidden names; -1 if getrandom fails */
+static int suffix6(char out[7])
+{
+    static const char letters[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    unsigned char r[6];
+    if (getrandom(r, sizeof r, 0) != (ssize_t)sizeof r)
+        return -1;
+    for (int i = 0; i < 6; i++)
+        out[i] = letters[r[i] % (sizeof letters - 1)];
+    out[6] = 0;
+    return 0;
+}
+
 int pnp_out_open(struct pnp_out *o, const char *path, mode_t mode, char *err, size_t errlen)
 {
     memset(o, 0, sizeof *o);
@@ -69,17 +83,12 @@ int pnp_out_open(struct pnp_out *o, const char *path, mode_t mode, char *err, si
         snprintf(err, errlen, "out of memory");
         goto fail;
     }
-    static const char letters[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     for (int attempt = 0; attempt < 100; attempt++) {
-        unsigned char r[6];
         char suffix[7];
-        if (getrandom(r, sizeof r, 0) != (ssize_t)sizeof r) {
+        if (suffix6(suffix) < 0) {
             snprintf(err, errlen, "getrandom: %s", strerror(errno));
             goto fail;
         }
-        for (int i = 0; i < 6; i++)
-            suffix[i] = letters[r[i] % (sizeof letters - 1)];
-        suffix[6] = 0;
         free(o->part);
         if (asprintf(&o->part, "%s/.%s.%s.pnp-part", dir, base, suffix) < 0) {
             o->part = NULL;
@@ -106,12 +115,13 @@ fail:
 
 int pnp_out_commit(struct pnp_out *o, int replace, char *err, size_t errlen)
 {
-    if (fsync(o->fd) < 0 || close(o->fd) < 0) {
-        o->fd = -1;
-        snprintf(err, errlen, "can't write %s: %s", o->path, strerror(errno));
+    int synced = fsync(o->fd), e = errno;
+    int closed = close(o->fd); /* always closed, even when fsync failed */
+    o->fd = -1;
+    if (synced < 0 || closed < 0) {
+        snprintf(err, errlen, "can't write %s: %s", o->path, strerror(synced < 0 ? e : errno));
         return -1;
     }
-    o->fd = -1;
     int r;
     if (replace) {
         r = rename(o->part, o->path);
@@ -143,6 +153,44 @@ int pnp_out_commit(struct pnp_out *o, int replace, char *err, size_t errlen)
     return 0;
 }
 
+/* Replacing (-f) with several outputs (a key or shares, then the ciphertext) can't be one atomic rename, and a
+ * key replaced and then lost because a later output failed could mean a file lost for good. So each old file is
+ * first renamed aside to a hidden ".NAME.XXXXXX.pnp-old" beside it, the new files take the free names, and the
+ * old ones are deleted only once every new one is in place. If anything fails, discarding puts them back. A crash
+ * in between leaves the old files under those names, never deleted. */
+int pnp_out_aside(struct pnp_out *o, char *err, size_t errlen)
+{
+    struct stat st;
+    if (lstat(o->path, &st) < 0)
+        return errno == ENOENT ? 0 : (snprintf(err, errlen, "can't check %s: %s", o->path, strerror(errno)), -1);
+    char *dir = pnp_dir_of(o->path), *base = pnp_base_of(o->path), suffix[7];
+    int r = -1;
+    if (!dir || !base || suffix6(suffix) < 0 || asprintf(&o->aside, "%s/.%s.%s.pnp-old", dir, base, suffix) < 0) {
+        o->aside = NULL;
+        snprintf(err, errlen, "out of memory");
+    } else if ((r = renameat2(AT_FDCWD, o->path, AT_FDCWD, o->aside, RENAME_NOREPLACE)) < 0 &&
+               (errno == EINVAL || errno == ENOSYS)) {
+        r = rename(o->path, o->aside); /* no RENAME_NOREPLACE here; the random name won't be taken */
+    }
+    if (r < 0 && o->aside) {
+        snprintf(err, errlen, "can't move the old %s aside to replace it: %s", o->path, strerror(errno));
+        free(o->aside);
+        o->aside = NULL;
+    }
+    free(dir);
+    free(base);
+    return r < 0 ? -1 : 0;
+}
+
+void pnp_out_drop_old(struct pnp_out *o)
+{
+    if (o->aside) {
+        unlink(o->aside);
+        free(o->aside);
+        o->aside = NULL;
+    }
+}
+
 void pnp_out_unplace(struct pnp_out *o)
 {
     if (o->placed && o->path) {
@@ -157,6 +205,12 @@ void pnp_out_discard(struct pnp_out *o)
         close(o->fd);
     if (o->part && !o->placed)
         unlink(o->part);
+    if (o->aside) { /* a failure after moving the old file aside: put it back */
+        if (o->placed)
+            unlink(o->path);
+        rename(o->aside, o->path);
+        free(o->aside);
+    }
     free(o->part);
     free(o->path);
     memset(o, 0, sizeof *o);

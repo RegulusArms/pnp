@@ -56,6 +56,8 @@ extern volatile sig_atomic_t pnp_stop;
 /* plaintext, pad, output and share buffers: locked in RAM where allowed (never swapped) and wiped after use */
 static uint8_t buf_in[CHUNK], buf_pad[CHUNK], buf_out[CHUNK], buf_share[CHUNK];
 static char pass[PNP_PASS_MAX]; /* the passphrase (--protect): locked and wiped the same way */
+static char preset[PNP_PASS_MAX]; /* a passphrase given in advance (pnp_preset_passphrase): locked too */
+static int mlock_failed; /* some buffer couldn't be locked (RLIMIT_MEMLOCK): said once, before pad bytes are made */
 
 static int quiet;
 
@@ -83,11 +85,10 @@ static void setup_process(void)
     struct rlimit none = {0, 0};
     setrlimit(RLIMIT_CORE, &none);
     prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
-    mlock(buf_in, sizeof buf_in);
-    mlock(buf_pad, sizeof buf_pad);
-    mlock(buf_out, sizeof buf_out);
-    mlock(buf_share, sizeof buf_share);
-    mlock(pass, sizeof pass);
+    /* kept out of swap, where pad, plaintext or passphrase bytes would outlive the run. The limit (ulimit -l) is
+     * usually 8 MiB, plenty for these; if it's lower, pnp says so (note_unlocked) rather than stopping. */
+    mlock_failed = mlock(buf_in, sizeof buf_in) | mlock(buf_pad, sizeof buf_pad) | mlock(buf_out, sizeof buf_out) |
+                   mlock(buf_share, sizeof buf_share) | mlock(pass, sizeof pass) | mlock(preset, sizeof preset);
 }
 
 /* after cleaning up, die of the signal that stopped us, so the shell sees it */
@@ -200,6 +201,24 @@ static const char *state_text(enum pnp_source_state s)
     return "?";
 }
 
+static void note_unlocked(void)
+{
+    static int said;
+    if (mlock_failed && !quiet && !said++)
+        say("note: pnp couldn't lock its buffers in memory (the limit, ulimit -l, is too low), so pad and file "
+            "bytes could be written to swap. Raise the limit or turn swap off.");
+}
+
+/* a virtual machine's host can see everything: said before making a pad or passphrase there */
+static void note_vm(void)
+{
+    char vm[64];
+    if (pnp_in_vm(vm, sizeof vm))
+        say("note: this is a virtual machine (%s). Its host can read the pad and your file from memory, and can "
+            "decide what RDSEED and /dev/hwrng return: encrypt on a physical machine unless you trust the host.",
+            vm);
+}
+
 static void list_sources(const struct pnp_rng *rng, FILE *f)
 {
     for (int i = 0; i < rng->count; i++) {
@@ -241,6 +260,7 @@ static int open_sources(struct pnp_rng *rng, int verbose, const char *what)
         char desc[256];
         pnp_rng_describe(rng, desc, sizeof desc);
         say("%s from %s", what, desc);
+        note_vm();
         if (hwrng_denied(rng)) {
             say("note: /dev/hwrng isn't used (permission denied)");
             explain_denied();
@@ -430,7 +450,6 @@ static int write_key_material(struct pnp_out *key, char *const *key_path, int nk
 
 /* A passphrase given in advance (the interactive mode asks once for a whole batch of files): used instead of
  * asking, until cleared. Locked in RAM and wiped like the rest. */
-static char preset[PNP_PASS_MAX];
 static long preset_len = -1;
 
 void pnp_preset_passphrase(const char *p, size_t len)
@@ -488,6 +507,7 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
     int ret = 1, in = -1;
     struct stat st;
 
+    note_unlocked();
     memset(&mac, 0, sizeof mac);
     memset(wrap, 0, sizeof wrap);
     memset(&ct, 0, sizeof ct);
@@ -623,20 +643,37 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
         failed = ct_path;
         goto write_failed;
     }
+    /* With -f, the files being replaced are moved aside first, and deleted only once every new file is in place:
+     * if anything below fails, discarding puts them back (fileio.c). So an old key is never lost. */
+    if (force) {
+        for (int i = 0; i < nkeys; i++) {
+            if (pnp_out_aside(&key[i], err, sizeof err) < 0) {
+                say("%s", err);
+                goto out;
+            }
+        }
+        if (pnp_out_aside(&ct, err, sizeof err) < 0) {
+            say("%s", err);
+            goto out;
+        }
+    }
     /* the key first: a ciphertext without its key would be lost data, a stray key is only noise */
     for (int i = 0; i < nkeys; i++) {
-        if (pnp_out_commit(&key[i], force, err, sizeof err) < 0) {
+        if (pnp_out_commit(&key[i], 0, err, sizeof err) < 0) {
             say("%s", err);
             goto unplace;
         }
     }
-    if (pnp_out_commit(&ct, force, err, sizeof err) < 0) {
+    if (pnp_out_commit(&ct, 0, err, sizeof err) < 0) {
         say("%s", err);
-        goto unplace; /* with -f, a replaced old key is gone by now: rare, and said in pnp.1 */
+        goto unplace;
     }
     pnp_sync_dir(ct_path);
     for (int i = 0; i < nkeys; i++)
         pnp_sync_dir(key_path[i]);
+    pnp_out_drop_old(&ct);
+    for (int i = 0; i < nkeys; i++)
+        pnp_out_drop_old(&key[i]);
     if (!quiet && !shares) {
         say("wrote %s and %s%s. Keep the key secret and apart from the .pnp file.", ct_path, key_path[0],
             po->on ? " (protected with the passphrase)" : "");
@@ -673,8 +710,7 @@ out:
     explicit_bzero(mackey, sizeof mackey);
     explicit_bzero(wkey, sizeof wkey);
     explicit_bzero(wrap, sizeof wrap);
-    explicit_bzero(&rng, sizeof rng);
-    pnp_rng_close(&rng);
+    pnp_rng_close(&rng); /* closes the sources (it needs rng's count) and wipes rng */
     for (int i = 0; i < nkeys; i++) {
         pnp_out_discard(&key[i]);
         free(key_path[i]);
@@ -878,6 +914,7 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
     int ret = 1, nk = 0, find_shares = 0;
     struct stat st;
 
+    note_unlocked();
     memset(&mac, 0, sizeof mac);
     memset(wrap, 0, sizeof wrap);
     memset(&out, 0, sizeof out);
@@ -1101,8 +1138,7 @@ int pnp_make_passphrase(int n, char *buf, size_t len, int verbose)
 out:
     if (ret < 0)
         explicit_bzero(buf, len);
-    explicit_bzero(&rng, sizeof rng);
-    pnp_rng_close(&rng);
+    pnp_rng_close(&rng); /* closes the sources (it needs rng's count) and wipes rng */
     return ret;
 }
 
@@ -1213,6 +1249,10 @@ int main(int argc, char **argv)
         pnp_rng_open(&rng);
         printf("Hardware random sources:\n");
         list_sources(&rng, stdout);
+        char vm[64];
+        if (pnp_in_vm(vm, sizeof vm))
+            printf("This is a virtual machine (%s): its host can read pnp's memory and decide what these sources "
+                   "return.\n", vm);
         int ok = rng.hardware_ok;
         fflush(stdout);
         if (hwrng_denied(&rng))

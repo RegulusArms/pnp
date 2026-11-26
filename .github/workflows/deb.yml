@@ -62,6 +62,12 @@ jobs:
           chown -R tester .
           su tester -c "make WERROR=1 test"
 
+      - name: Test with sanitizers
+        # the same tests built with AddressSanitizer and UndefinedBehaviorSanitizer: memory errors and undefined
+        # behaviour fail the run. On the newest compiler only.
+        if: matrix.image == 'ubuntu:26.04'
+        run: su tester -c "make sanitize"
+
   deb:
     needs: test
     runs-on: ubuntu-24.04

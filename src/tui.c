@@ -1492,6 +1492,24 @@ int pnp_tui(void)
         }
     }
     term_leave();
+#ifdef PNP_TEST
+    if (getenv("PNP_TEST_FDS")) { /* test hook: what this process still has open, to catch leaked descriptors */
+        FILE *f = fopen(getenv("PNP_TEST_FDS"), "we");
+        DIR *d = opendir("/proc/self/fd");
+        struct dirent *e;
+        while (f && d && (e = readdir(d))) {
+            char p[300], target[PATH_MAX];
+            ssize_t n;
+            snprintf(p, sizeof p, "/proc/self/fd/%s", e->d_name);
+            if (e->d_name[0] != '.' && (n = readlink(p, target, sizeof target - 1)) > 0)
+                fprintf(f, "%.*s\n", (int)n, target);
+        }
+        if (d)
+            closedir(d);
+        if (f)
+            fclose(f);
+    }
+#endif
     free(ents);
     free(keys);
     free(scr);

@@ -3,6 +3,7 @@
 #   make test             build the test binaries and run tests/run.sh (needs script(1), from bsdutils)
 #   sudo make install     /usr/local/bin/pnp and its manual (PREFIX, DESTDIR)
 #   sudo make install-udev  the udev rule and the pnp group, so the group can read /dev/hwrng
+#   make sanitize         the tests again, built with AddressSanitizer and UndefinedBehaviorSanitizer
 #   make deb              build/pnp_<version>_<arch>.deb
 #   make WERROR=1 ...     warnings are errors (CI)
 
@@ -30,7 +31,7 @@ SRC := src/main.c src/tui.c src/rng.c src/fileio.c src/mac.c src/protect.c src/k
 HDR := src/pnp.h src/format.h src/rng.h src/fileio.h src/mac.h src/protect.h src/kdf.h src/blake2b.h src/chacha20.h build/wordlist.h
 KDF_SRC := src/kdf.c src/blake2b.c src/chacha20.c
 
-.PHONY: all test install install-udev uninstall deb clean
+.PHONY: all test sanitize install install-udev uninstall deb clean
 
 all: build/pnp
 
@@ -63,6 +64,14 @@ build/xorcheck: tests/xorcheck.c | build
 
 test: build/pnp build/pnp-test build/test_health build/test_mac build/test_kdf build/xorcheck
 	tests/run.sh
+
+# Memory errors and undefined behaviour (out-of-bounds, use-after-free, overflow...) stop the run. build/ is wiped
+# before and after, so a sanitized binary never ends up installed or packaged.
+SAN := -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+sanitize:
+	rm -rf build
+	PNP_SANITIZE=1 $(MAKE) --no-print-directory test CFLAGS="-O1 -g $(SAN)" LDFLAGS="$(SAN)"
+	rm -rf build
 
 install: build/pnp
 	install -D -m 755 build/pnp $(DESTDIR)$(PREFIX)/bin/pnp

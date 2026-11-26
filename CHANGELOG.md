@@ -2,6 +2,17 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.5
+
+- **Replacing files with `-f` can no longer lose an old key.** The files being replaced are moved aside and deleted
+  only once every new file is in place; if saving one fails, the old ones are put back.
+- pnp now warns when it runs in a virtual machine (whose host can read the pad and choose what the hardware
+  sources return), and when it can't keep its buffers out of swap.
+- Fixed: the hardware random sources were left open after each file, so the interactive mode leaked a file
+  descriptor per file encrypted.
+- The README has a new section, "What the guarantee rests on", and says plainly that health tests catch failing
+  sources but can't prove one is random.
+
 ## 0.1.0-alpha.4
 
 - **`--protect` locks the key with a passphrase**, so a stolen key file alone isn't enough. Every passphrase guess

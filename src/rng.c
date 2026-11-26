@@ -7,7 +7,9 @@
  *   RDSEED      the x86 CPU instruction giving its entropy source's conditioned output (not RDRAND, which is the
  *               output of a deterministic generator)
  * Each source's raw bytes go through SP 800-90B start-up and continuous health tests. A source failing at start-up
- * isn't used; a source failing while the pad is made stops the whole run (the caller deletes what it wrote).
+ * isn't used; a source failing while the pad is made stops the whole run (the caller deletes what it wrote). These
+ * tests detect failures (stuck, repeating, badly biased output); no test can prove a source is unpredictable, so
+ * the guarantee still rests on at least one source being a real random source.
  * The pad is the XOR of every source in use and getrandom(): as long as the sources are independent, the result is
  * at least as unpredictable as the best of them, so one weak or backdoored source can't make it worse.
  * With no healthy hardware source, the caller refuses to encrypt: getrandom() alone is never enough. */
@@ -92,6 +94,46 @@ static int read_full(int fd, uint8_t *buf, size_t n)
         }
         buf += r;
         n -= (size_t)r;
+    }
+    return 0;
+}
+
+/* Whether pnp is running in a virtual machine: the CPUID "hypervisor present" bit (with the hypervisor's vendor
+ * string), or a virtio hwrng (fed by the host). Writes a name into what. A virtual machine's host can read its
+ * memory and decide what RDSEED and /dev/hwrng return, so the pad is only as secret as the host is honest. */
+int pnp_in_vm(char *what, size_t len)
+{
+#ifdef PNP_TEST
+    if (getenv("PNP_TEST_VM")) { /* test hook: "" for a physical machine, else the hypervisor's name */
+        snprintf(what, len, "%s", getenv("PNP_TEST_VM"));
+        return what[0] != 0;
+    }
+#endif
+#ifdef PNP_HAVE_X86
+    unsigned a, b, c, d;
+    if (__get_cpuid(1, &a, &b, &c, &d) && (c >> 31) & 1) {
+        unsigned r[3];
+        char v[13];
+        __cpuid(0x40000000, a, r[0], r[1], r[2]);
+        memcpy(v, r, 12);
+        v[12] = 0;
+        for (int i = 0; i < 12; i++)
+            if (v[i] && (v[i] < 0x20 || v[i] > 0x7e))
+                v[i] = '?';
+        snprintf(what, len, "%s", v[0] ? v : "unknown hypervisor");
+        return 1;
+    }
+#endif
+    char cur[64] = "";
+    FILE *f = fopen(HWRNG_CURRENT, "re");
+    if (f) {
+        if (!fgets(cur, sizeof cur, f))
+            cur[0] = 0;
+        fclose(f);
+    }
+    if (strstr(cur, "virtio")) {
+        snprintf(what, len, "virtio-rng");
+        return 1;
     }
     return 0;
 }
