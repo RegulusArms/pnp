@@ -1,0 +1,4 @@
+# pnp: let members of the pnp group read the hardware random number generator (/dev/hwrng), so pnp can make
+# one-time pads from it without running as root. Read only: nobody but root can write to it.
+# The kernel names the device hw_random (its node is /dev/hwrng).
+SUBSYSTEM=="misc", KERNEL=="hw_random", GROUP="pnp", MODE="0640"

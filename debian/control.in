@@ -1,0 +1,18 @@
+Package: pnp
+Version: @DEB_VERSION@
+Architecture: @ARCH@
+Maintainer: RegulusArms <ross@regulusarms.com>
+Installed-Size: @SIZE@
+Depends: libc6 (>= @GLIBC@), passwd
+Section: utils
+Priority: optional
+Homepage: https://pnp.regulusarms.com
+Description: one-time pad file encryption that stays secure even if P = NP
+ pnp encrypts any file with a one-time pad: a key of random bytes as long as
+ the file, read from the machine's hardware random number generators
+ (/dev/hwrng and the CPU's RDSEED instruction), health-checked as they're
+ read, and combined with XOR. A one-time pad's security doesn't rest on any
+ problem being hard to compute, so it holds even if P = NP.
+ .
+ pnp FILE writes FILE.pnp and its key FILE.pnp.key; pnp -d FILE.pnp
+ decrypts it. Members of the pnp group may read /dev/hwrng.

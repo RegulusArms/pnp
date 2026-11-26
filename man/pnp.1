@@ -1,0 +1,114 @@
+.TH PNP 1 "2026-11-26" "pnp @VERSION@" "User Commands"
+.SH NAME
+pnp \- one-time pad file encryption that stays secure even if P = NP
+.SH SYNOPSIS
+.B pnp
+.RB [ \-f ]
+.RB [ \-q ]
+.RB [ \-v ]
+.RB [ \-o
+.IR OUT ]
+.I FILE
+.br
+.B pnp \-d
+.RB [ \-f ]
+.RB [ \-q ]
+.RB [ \-k
+.IR KEY ]
+.RB [ \-o
+.IR OUT ]
+.I FILE.pnp
+.br
+.B pnp \-\-sources
+.SH DESCRIPTION
+.B pnp
+encrypts any file with a one-time pad: a key of random bytes exactly as long as the file, combined with it by XOR.
+Encrypting
+.I FILE
+writes the ciphertext
+.I FILE.pnp
+and the key
+.IR FILE.pnp.key .
+Decrypting
+.I FILE.pnp
+with
+.I FILE.pnp.key
+gives back
+.IR FILE .
+.PP
+A one-time pad's security doesn't depend on any problem being hard to compute, so it holds even if P = NP, as long
+as the key is truly random, kept secret, and used only once.
+.PP
+The key's bytes come from the machine's hardware random number generators:
+.I /dev/hwrng
+and the x86 CPU instruction RDSEED, each checked with the SP 800-90B start-up and continuous health tests. They are
+combined with XOR, together with the kernel's
+.BR getrandom (2).
+If no hardware source is usable,
+.B pnp
+refuses to encrypt. Decrypting needs no random source.
+.SH OPTIONS
+.TP
+.BR \-d ", " \-\-decrypt
+Decrypt instead of encrypting.
+.TP
+.BR \-k ", " \-\-key " \fIKEY\fR"
+The key to decrypt with. Default:
+.IR FILE.pnp.key .
+.TP
+.BR \-o ", " \-\-output " \fIOUT\fR"
+Where to write. Encrypting: the ciphertext (the key goes to
+.IR OUT.key ).
+Decrypting: the plaintext (needed when the ciphertext's name doesn't end in .pnp).
+.TP
+.BR \-f ", " \-\-force
+Replace output files that already exist. Without it,
+.B pnp
+never replaces a file.
+.TP
+.BR \-q ", " \-\-quiet
+Don't print which random sources made the key, or what was written.
+.TP
+.BR \-v ", " \-\-verbose
+Print every random source and its state before encrypting.
+.TP
+.B \-\-sources
+List the hardware random sources and whether they can be used, then exit (status 1 if none can).
+.TP
+.BR \-V ", " \-\-version
+Print the version.
+.TP
+.BR \-h ", " \-\-help
+Print a short help.
+.SH FILES
+.TP
+.I /dev/hwrng
+The kernel's hardware random number generator. pnp's udev rule makes it readable by the
+.B pnp
+group. Join it with
+.BR "sudo usermod \-aG pnp $USER" ,
+then log out and back in.
+.TP
+.I /usr/lib/udev/rules.d/60-pnp-hwrng.rules
+That rule.
+.SH NOTES
+Outputs are written under hidden names
+.RI ( .NAME.XXXXXX.pnp-part )
+and renamed into place only when complete, so a failure or Ctrl-C never leaves a partial file under a real name. The
+key is created readable by its owner only (mode 600), as is a decrypted file.
+.PP
+With
+.BR \-f ,
+if the ciphertext can't be saved after its key was, the key is removed again; an older key it replaced is then gone.
+.PP
+A one-time pad hides the contents but doesn't detect changes: a modified ciphertext decrypts to modified data without
+any error. The ciphertext and key do record which encryption they belong to, so a wrong key is refused.
+.PP
+The key is as large as the file. Losing the key means losing the file.
+.SH EXIT STATUS
+0 on success, 1 on failure, 2 on a usage error.
+.SH SEE ALSO
+.BR getrandom (2),
+.BR udev (7)
+.PP
+https://pnp.regulusarms.com

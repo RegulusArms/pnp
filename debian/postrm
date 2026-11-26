@@ -1,0 +1,15 @@
+#!/bin/sh
+# pnp's post-removal: on purge, remove the pnp group; dpkg has already removed the udev rule.
+set -e
+if [ "$1" = purge ]; then
+    if getent group pnp >/dev/null; then
+        groupdel pnp >/dev/null 2>&1 || true
+    fi
+fi
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    if [ -d /run/udev ] && command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=misc --sysname-match=hw_random >/dev/null 2>&1 || true
+    fi
+fi
+exit 0

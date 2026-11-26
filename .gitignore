@@ -40,3 +40,6 @@ venv/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
+
+# Build output (make, make deb)
+build/
