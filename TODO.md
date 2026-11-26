@@ -22,6 +22,9 @@ Planned work for pnp, roughly in priority order.
 
 - [x] An information-theoretic integrity check (a one-time MAC keyed from the pad), so a modified ciphertext is
   detected instead of decrypting to modified data. HMAC or a plain hash wouldn't keep the P = NP claim.
+- [x] An optional passphrase lock on keys (`--protect`: Balloon then Argon2id, then ChaCha20), to slow down
+  whoever steals a key file, plus `--gen-passphrase`. Computationally secure only, so it's an extra on top of the
+  pad, never part of the P = NP claim.
 - [ ] TPM 2.0 (`/dev/tpmrm0`) as an extra hardware source, for machines whose TPM isn't already behind
   `/dev/hwrng`.
 - [ ] A progress display for large files when the hardware source is slow.

@@ -12,9 +12,10 @@ tells an attacker nothing at all without it.
 
 That moves the whole secret into the key file:
 
-- **Anyone who has the key file and the ciphertext can read your file.** There's no password on the key and no
-  second barrier. Wrapping keys in a password-based cipher would bring back exactly the kind of security that
-  P = NP could break, so pnp deliberately doesn't do it.
+- **Anyone who has the key file and the ciphertext can read your file.** By default there's no password on the
+  key and no second barrier. `--protect` can add a passphrase, but that layer is only computationally secure
+  (the kind of security P = NP could break): it slows down a thief, it doesn't make a stolen key safe. Treat
+  every key as if anyone who picks it up can use it.
 - **Nobody without the key can read your file, ever.** Not with a supercomputer, a new algorithm, or a proof that
   P = NP.
 - **Losing the key loses the file.** There's no recovery.
@@ -107,6 +108,8 @@ This erases everything on the drive. **Check the device name twice:** choosing t
   which could copy every key on the drive while it's connected.
 - **Keep the ciphertext elsewhere.** The `.pnp` files can go anywhere: the computer, a backup, the cloud. The drive
   holding the keys should hold no ciphertexts, so losing it alone gives nothing away.
+- **If you lock keys with `--protect`, never keep the passphrase on the drive** (or on a note in the drive's
+  case). Keep it in your head, or written down somewhere else entirely.
 - **Keep a checksum list on the drive** to catch corruption early:
 
   ```
@@ -126,7 +129,8 @@ A drive in your pocket is a key you can see. A drive left in a desk is a key you
   shows you that the case was opened. A copy made over USB leaves no sign, so the real protection is not letting
   the drive out of your sight.
 - **If it's lost or stolen,** assume every key on it is known to whoever has it. Any file whose ciphertext they can
-  also get is exposed. Move or delete those ciphertexts if you can.
+  also get is exposed. Move or delete those ciphertexts if you can. Keys locked with a strong `--protect`
+  passphrase buy you time, but treat them as exposed too: that lock is only computationally secure.
 
 ## Backups, and carrying only half a key
 
@@ -183,7 +187,8 @@ you're done with them.
 
 ## Summary
 
-- pnp's keys are its only secret. Whoever has a key and its ciphertext can read the file. Nobody else can, ever.
+- pnp's keys are its only secret, so how you store them is pnp's weakest link. Whoever has a key and its
+  ciphertext can read the file. Nobody else can, ever.
 - Keep keys on a dedicated external hard disk with ext4, written straight there with `--key-out`.
 - Carry it, plug it in only to use it, only into a computer you trust, and keep ciphertexts elsewhere.
 - Back it up, or split keys into shares across a drive you carry and one you don't.

@@ -30,7 +30,8 @@ pnp --gen-passphrase                    # print a strong random passphrase
 ```
 
 Keep the `.pnp.key` file secret and separate from the `.pnp` file, and never reuse it. Anyone holding both can
-decrypt the file; without the key, nobody can. See [Keeping your keys](#keeping-your-keys).
+decrypt the file; without the key, nobody can. **That makes the way you store your keys the weakest link in pnp**:
+see [Keeping your keys](#keeping-your-keys).
 
 The catch: the key is as big as the file, and losing it means losing the file. So from now on you'll need to carry
 an Imperial code cylinder on your belt at all times to keep your keys safe. Uniform sold separately.
@@ -86,7 +87,8 @@ sudo rm /etc/apt/sources.list.d/pnp.sources /etc/apt/keyrings/pnp.asc
 ```
 
 Files you encrypted stay encrypted after pnp is removed. Keep their keys: you can decrypt them later with pnp, or
-with the few lines of Python in [docs/format.md](docs/format.md).
+with the few lines of Python in [docs/format.md](docs/format.md) (keys locked with `--protect` need two Python
+packages as well, `argon2-cffi` and `cryptography`).
 
 ## Where the randomness comes from
 
@@ -120,7 +122,7 @@ sudo usermod -aG pnp $USER     # then log out and back in
 | `--shares N` | Write the key as `N` shares (2 to 16) instead of one key file. Every share is needed to decrypt |
 | `--protect` | Also lock the key (or each share) with a passphrase, asked for twice. Decrypting asks for it. See [Locking a key with a passphrase](#locking-a-key-with-a-passphrase) |
 | `--kdf-memory MIB` | With `--protect`: the memory each passphrase guess costs, in MiB (default 1024, 8 to 65536). The decrypting computer needs this much free memory |
-| `--passphrase-file FILE` | Read the passphrase from the first line of `FILE` instead of asking (for scripts) |
+| `--passphrase-file FILE` | Read the passphrase from the first line of `FILE` instead of asking (for scripts). Anyone who can read that file has the passphrase |
 | `--gen-passphrase[=WORDS]` | Print a random passphrase of 7 words (or `WORDS`, 5 to 20) and exit |
 | `-f`, `--force` | Replace files that already exist. Without it, pnp never replaces anything |
 | `-q`, `--quiet` | Don't print which sources made the key, or what was written |
@@ -140,12 +142,21 @@ decrypts them and says so.
 ## Keeping your keys
 
 A one-time pad moves the whole problem of secrecy onto the key: the ciphertext is safe anywhere, the key has to
-be guarded. [docs/code-cylinder.md](docs/code-cylinder.md) walks through setting up a key drive to carry.
-Some rules:
+be guarded.
 
-- **Guard keys physically, not with more encryption.** An AES-encrypted drive, a password manager or a cloud
-  account is only as strong as the very ciphers P = NP would break. A USB stick in a drawer, a safe or a bank
-  deposit box doesn't depend on any of that.
+**The weakest link in pnp is how well you physically store your keys.** The mathematics can't be broken: no
+computer, new algorithm or proof that P = NP will ever read a pnp file without its key. So nobody serious will
+try. They'll go after the key instead: a USB stick left in a laptop bag, a key copied to a cloud folder or
+emailed "just this once", a backup drive in an unlocked drawer, an old stick thrown away without being destroyed.
+In practice, your files are exactly as safe as the place your keys are kept, and no more. Everything else pnp does
+(hardware randomness, health tests, the integrity check, shares, `--protect`) is there so that this is the only
+thing left to get right.
+
+[docs/code-cylinder.md](docs/code-cylinder.md) walks through setting up a key drive to carry. Some rules:
+
+- **Guard keys physically, and don't rely on encryption to do it.** An AES-encrypted drive, a password manager or
+  a cloud account is only as strong as the very ciphers P = NP would break, and so is pnp's own `--protect`. A USB
+  stick in a drawer, a safe or a bank deposit box doesn't depend on any of that.
 - **Keep the ciphertext anywhere and the key offline.** Never store a key with its ciphertext, in cloud storage,
   or in email.
 - **Keep keys off the computer's SSD.** A deleted file on an SSD may stay recoverable, because the drive moves data
@@ -249,7 +260,7 @@ MIT. See [LICENSE](LICENSE).
 |---|---|
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
 | [docs/code-cylinder.md](docs/code-cylinder.md) | Setting up a key drive (an external hard disk) to carry with you, and why pnp relies on physical security |
-| [docs/format.md](docs/format.md) | The file formats (ciphertext, key, key shares), and how to decrypt without pnp |
+| [docs/format.md](docs/format.md) | The file formats (ciphertext, key, key shares, keys locked with a passphrase), and how to decrypt without pnp |
 | [man/pnp.1](man/pnp.1) | The manual page (`man pnp` once installed) |
 | [TODO.md](TODO.md) | Planned work |
 | [LICENSE](LICENSE) | The MIT license |

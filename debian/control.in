@@ -15,4 +15,6 @@ Description: one-time pad file encryption that stays secure even if P = NP
  problem being hard to compute, so it holds even if P = NP.
  .
  pnp FILE writes FILE.pnp and its key FILE.pnp.key; pnp -d FILE.pnp
- decrypts it. Members of the pnp group may read /dev/hwrng.
+ decrypts it. Keys can be split into shares, and optionally locked with a
+ passphrase (a computationally secure extra, not part of the P = NP claim).
+ Members of the pnp group may read /dev/hwrng.

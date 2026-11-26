@@ -11,6 +11,8 @@ What changed in each version of pnp, newest first.
   `--passphrase-file` reads the passphrase from a file for scripts. Works with `--shares` and `--key-out`.
 - **`--gen-passphrase` prints a strong random passphrase**: 7 words (about 90 bits) from the EFF's word list,
   chosen with the same hardware randomness as the pad.
+- The README, the manual and the key drive guide now say plainly that how you physically store your keys is the
+  weakest link in pnp.
 
 ## 0.1.0-alpha.3
 

@@ -125,9 +125,10 @@ static void say(const char *fmt, ...)
 static void usage(FILE *f)
 {
     fprintf(f,
-            "usage: pnp [-f] [-q] [-o OUT] [--key-out PATH] [--shares N] [--protect] FILE\n"
+            "usage: pnp [-f] [-q] [-o OUT] [--key-out PATH] [--shares N]\n"
+            "           [--protect [--kdf-memory MIB] [--passphrase-file FILE]] FILE\n"
             "                                    encrypt FILE to FILE.pnp and its key FILE.pnp.key\n"
-            "       pnp -d [-f] [-q] [-k KEY]... [-o OUT] FILE.pnp\n"
+            "       pnp -d [-f] [-q] [-k KEY]... [-o OUT] [--passphrase-file FILE] FILE.pnp\n"
             "                                    decrypt FILE.pnp with FILE.pnp.key (or its shares) to FILE\n"
             "       pnp --sources                list the hardware random sources and whether they're usable\n"
             "       pnp --gen-passphrase[=WORDS] print a random passphrase (7 words unless WORDS, 5-20)\n"

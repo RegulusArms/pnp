@@ -173,7 +173,8 @@ decrypts these, with a note that changes to them can't be detected, but never wr
 
 ## Decrypting without pnp
 
-The format is simple enough to undo by hand. For example, in Python, checking the integrity check too:
+The format is simple enough to undo by hand. For example, in Python, checking the integrity check too (for a key
+or shares locked with `--protect`, unwrap them first: see [Protected keys](#protected-keys)):
 
 ```python
 P = 2**127 - 1

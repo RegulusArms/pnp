@@ -186,6 +186,11 @@ makes a strong one. A key locked with
 can only be unlocked by pnp 0.1.0\-alpha.4 or newer.
 .PP
 The key is as large as the file. Losing the key means losing the file.
+.PP
+The weakest link is how the keys are physically stored. Nothing can recover a file from its ciphertext alone, so an
+attacker will go after the key instead: anyone who gets a key file (and its passphrase, with
+.BR \-\-protect )
+can read the file. Keep keys offline, apart from the ciphertext, and out of cloud storage and email.
 .SH EXIT STATUS
 0 on success, 1 on failure, 2 on a usage error.
 .SH SEE ALSO
