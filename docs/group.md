@@ -33,9 +33,11 @@ These hold only if all of the following hold, in the same way the four OTP rules
 
 1. **Honest majority.** Fewer than half of the group cheat: with n people, at most ω cheat, where
    ω < n/2. Three people tolerate one cheater. Five tolerate two.
-2. **Secret pairwise channels at setup.** Each transfer at the meeting happens between two people only, on a
-   courier stick that only those two handle. The signer must never get hold of what one recipient gives another
-   (see "Courier sticks").
+2. **Secret pairwise channels at setup.** Each transfer at the meeting happens between two people only. The signer
+   must never get hold of what one recipient gives another (see "Courier sticks"). Courier sticks are reused
+   between members (decision 8), so this rests on a **physical assumption**: no member reads flash below the USB
+   interface (vendor debug commands, or desoldering the chip) during the minutes they hold another member's
+   stick. A group that won't rely on that uses strict mode, with one stick per pair.
 3. **Truly random keys** from pnp's hardware RNG path. Each recipient's random split is made on that recipient's
    own machine.
 4. **One message per slot.** Every signature uses up a slot of keys. A slot is never used twice.
@@ -116,27 +118,56 @@ carry over. This is the main cost: every function makes its own pass over the fi
 
 ### Parameters
 
-Defaults: l_max = 1 (one guaranteed hand-on, plus disputes), s = (0.49, 0.25, 0.01), each failure ≤ 2^−64,
-ω = the largest the honest-majority rule allows. Computed with the bounds above (scratch script, to become
-tests/uss_params.py):
+ω and l_max trade against each other. The paper allows a combination only if (l_max + 1)·d_R < 1/2, with
+d_R = (ω−1)/N, so tolerating more cheaters leaves room for fewer guaranteed hand-ons.
 
-| people | ω | k    | signature | signer's keys per slot | each recipient's keys per slot per signer |
-|-------:|--:|-----:|----------:|-----------------------:|------------------------------------------:|
-| 3      | 1 | 1600 | 1.6 KiB   | 306 KiB                | 166 KiB                                   |
-| 4      | 1 | 1650 | 3.6 KiB   | 711 KiB                | 256 KiB                                   |
-| 5      | 2 | 1650 | 6.4 KiB   | 1.2 MiB                | 342 KiB                                   |
-| 7      | 3 | 1700 | 15 KiB    | 2.9 MiB                | 528 KiB                                   |
-| 9      | 4 | 1750 | 27 KiB    | 5.2 MiB                | 725 KiB                                   |
+**Decided default:** the largest ω the honest-majority rule allows, then the largest l_max that ω leaves room for.
+The wizard also shows the other choice (fewer cheaters tolerated, more hand-ons) with its cost, and the group may
+pick it instead.
 
-k barely depends on ω. It depends mostly on the gaps between the s_l, so each extra level of l_max roughly
-doubles k.
+The thresholds s_{−1} > … > s_{l_max} are spaced evenly from 0.49 down to 0.01, and each failure probability is
+≤ 2^−64. The numbers below were computed with the bounds above (scratch script, to become tests/uss_params.py):
 
-Cylinder space per person, per key set, for ψ slots each (everyone signs): ψ × (signer column + (n−1) × recipient column). For
-1000 signatures each: about 640 MiB per person with 3 people, 2.6 GiB with 5, and 11 GiB with 9.
+| people | ω | l_max | k    | signature | signer's keys per slot | each recipient's, per slot per signer | per person, 1000 signatures each |
+|-------:|--:|------:|-----:|----------:|-----------------------:|---------------------------------------:|---------------------------------:|
+| 3      | 1 | 1     | 1600 | 1.6 KiB   | 306 KiB                | 166 KiB                                | 0.6 GiB                          |
+| 4      | 1 | 1     | 1650 | 3.6 KiB   | 711 KiB                | 256 KiB                                | 1.4 GiB                          |
+| 5      | 2 | 0     | 450  | 1.8 KiB   | 345 KiB                | 93 KiB                                 | 0.7 GiB                          |
+| 6      | 2 | 1     | 1700 | 10.4 KiB  | 2.0 MiB                | 440 KiB                                | 4.0 GiB                          |
+| 7      | 3 | 0     | 450  | 4.0 KiB   | 775 KiB                | 140 KiB                                | 1.5 GiB                          |
+| 8      | 3 | 0     | 450  | 5.4 KiB   | 1.0 MiB                | 163 KiB                                | 2.1 GiB                          |
+| 9      | 4 | 0     | 450  | 7.0 KiB   | 1.35 MiB               | 186 KiB                                | 2.7 GiB                          |
 
-Time: one polynomial pass per function, measured at 2.9 ms per MiB per function on the dev machine. Signing
-1 MiB with 3 people (6400 functions) takes 19 s on one core, or about 0.6 s on 32 threads. Verifying takes half
-that. With 5 people it's 4× more. This is for documents, contracts and keys. It isn't practical for
+The alternatives the wizard shows: 1 hand-on at 5 people needs ω=1 (2.5 GiB); at 7 and 9 people it needs ω=2
+(5.8 and 10.6 GiB). Each extra level of l_max roughly doubles k, and k barely depends on ω.
+
+**What l_max means in practice.** An honest signer's signature is exact: zero mismatches for every member, at
+every level. Levels only matter against a cheating signer (with up to ω−1 colluding recipients) who makes a
+borderline signature, so that one member accepts it and another rejects it.
+
+- **l_max = 0:** a signature one honest member accepts is guaranteed to be upheld by a group dispute vote, so it
+  can't be denied. Another member's ordinary check might still reject a borderline one, and that member then takes
+  it to the group.
+- **l_max = 1:** the next member's ordinary check is also guaranteed to accept it.
+
+**Inexact signatures are flagged.** Since honest signatures always have zero mismatches, pnp reports any
+signature with mismatches, even an accepted one, as "accepted, not exact: someone tampered with it (the signer or
+another member); raise it with the group". A cheating signer's borderline signature exposes them.
+
+**Group size:** the wizard offers 3-9 people as choices. A larger number is typed in by hand, and pnp shows a
+warning with the storage per person and the number of stick handoffs. Storage grows roughly with the square of the
+group size, but what is too much today may be small in ten years, so there's no hard cap below the format's limit
+of 255 members (one-byte index).
+
+**Amounts per key set (decided):** the wizard asks how many signed messages each person expects to send, and how
+much data each expects to send each member. It suggests starting values scaled to the period (for a month: 200
+signatures and 256 MiB per direction; the emergency set: 8 slots each). It shows the total storage per person,
+and per cylinder if daily and vault are split, before anything is made.
+
+Time: one polynomial pass per function (the signer computes N²k, each verifier Nk), measured at 2.9 ms per MiB
+per function on the dev machine. With the defaults, signing 1 MiB takes 19 s on one core with 3 people (6400
+functions), about the same with 5 people (7200), and 84 s with 9 people (28,800). On 32 threads that's 0.6-2.6 s.
+Verifying takes 1/N of that. This is for documents, contracts and keys. It isn't practical for
 multi-gigabyte files.
 
 # Encrypted messages
@@ -153,7 +184,27 @@ multi-gigabyte files.
   - **Unsigned:** the recipient knows who sent it but can't prove it, because they hold the same pad and could have
     written it themselves.
   - **Signed:** the recipient can show it to the group, and the sender can't deny it.
-- **Not hidden:** the fact that a pair talks, when, and roughly how much. The pool ID and length are in the clear.
+- **Unlinkable headers:** a message's header is a one-time random locator, so an outsider can't tell which group,
+  pair or period it belongs to, or link two messages together, whatever their computing power. **Not hidden:**
+  the file's size, and when it is sent.
+
+## Message headers reveal nothing (decision 13)
+
+Each pairwise pool has a small **locator area** next to its pad. It holds one 24-byte entry per message the pool
+can carry: a 16-byte locator and an 8-byte offset mask, all random from the meeting.
+
+- **Sending:** message i of a pool starts with locator i, then its pad offset XORed with mask i. Then come the
+  ciphertext and the tag. Both are used once, like pad.
+- **Receiving:** pnp keeps a lookahead table holding the next 16 unused locators of every incoming pool. That's
+  enough for messages that arrive out of order. A message's first 16 bytes are looked up in it: a hit names the
+  pool and the message number, and the mask reveals the offset. A miss means "not for me, or too far ahead":
+  `--lookahead N` widens the table.
+- **To an outsider,** every header is 16 random bytes that never repeat. Nothing names the group, the key set, the
+  pair or the period, and no two messages can be linked by their headers.
+- **The cost** is 24 bytes of pool per message. The wizard sizes the locator area from the expected number of
+  messages.
+- **Standalone signatures and kill notices aren't hidden.** A `.pnp.sig` file names its key set and signer, and a
+  kill notice names its group. To keep a signature private, send it inside a message.
 
 ## Pools (swapped at the meeting)
 
@@ -161,7 +212,7 @@ multi-gigabyte files.
   people never use the same bytes. Both laptops contribute: pool = R_A ⊕ R_B, each R from that laptop's hardware
   RNG path. Neither machine controls the pool alone, the same rule as rng.c's combining. Each R travels on a
   courier stick, and pnp combines them at import.
-- **The group pool (optional):** one pool held by every member, for messages to the whole group. It's split into
+- **The group pool (later version, decision 11):** one pool held by every member, for messages to the whole group. It's split into
   one region per sender, so senders never collide. Every member contributes (XOR of all). Every member can make its
   MAC, so **group-pool messages must be signed.** The MAC only keeps outsiders out.
 - **Sizes:** pools are as big as the messages they'll carry, plus 32 bytes of MAC key per message. With 1 GiB per
@@ -174,7 +225,7 @@ multi-gigabyte files.
    forwarding: B decrypting A's signed message and re-encrypting it to Carol, who would then believe A wrote it to
    her (Davis 2001, §1.1). Signing the recipient's name and encrypting the sender's name are the naming repairs in
    Davis §3.2. See research.md.
-2. **Sign** the frame, if it's signed (always for the group pool, `--sign` for pairwise). This uses one signing
+2. **Sign** the frame, if it's signed: always in a signed-by-default group, otherwise with `--sign` (decision 12). This uses one signing
    slot.
 3. **Encrypt** frame (+ signature) with the next pool bytes. The key material is laid out as now: a 32-byte MAC
    key, then pad as long as the data. The MAC covers header || plaintext as in format 002.
@@ -187,7 +238,7 @@ computational version of the same warning.
 
 ## Receiving
 
-1. Find the pool by its ID. **Refuse** it if the key set is killed, or if the receiver's clock is outside its window
+1. Find the pool by looking up the locator. **Refuse** the message if its key set is killed, or if the receiver's clock is outside its window
    plus the grace days. **Refuse** a range that overlaps one already used: a replay, or the sender reusing pad.
 2. Check the MAC as now. If it fails, nothing is written.
 3. Decrypt. Check the frame matches the pool: "from" is the pool direction's owner, or the region's owner in the
@@ -265,7 +316,7 @@ stolen key is useful, and the docs say exactly that.
 
 Any member can report that keys are compromised (a stolen cylinder, a laptop found tampered with). It takes
 signatures from **at least two different members** to kill keys. That number is the **kill threshold**, agreed at
-the meeting: 2 by default, up to a majority.
+the meeting: 2 by default, up to n − ω (the honest members), so cheaters can't block a real kill.
 
 ## The emergency key set
 
@@ -294,7 +345,9 @@ followed by one or more signatures over that frame, each from a different member
 ## What receiving one does
 
 - **Fewer valid signatures than the threshold:** a **warning** on every group action, for example "Alice reports
-  key set 2030-05 compromised; waiting for a second member to confirm". Nothing is killed yet.
+  key set 2030-05 compromised; waiting for a second member to confirm". Every send or sign with the reported keys
+  asks "send anyway? [y/N]", and the CLI refuses without `--despite-warning`. Received messages are labelled.
+  Nothing is killed or wiped yet.
 - **The threshold reached** (distinct members, each signature valid): pnp **kills** the scope at once.
   - It stops sending and receiving with it.
   - It wipes its unused slots and pad.
@@ -334,8 +387,11 @@ followed by one or more signatures over that frame, each from a different member
 
 ## Courier sticks
 
-All transfers at a meeting use **courier sticks**. Each member brings one cheap USB stick for each other member,
-plus one "self" stick for their own material, all prepared beforehand.
+All transfers at a meeting use **courier sticks**. Each member brings **one courier stick**, which visits every
+other member in turn and is overwritten between visits (decision 8). Each member also brings a **self stick**,
+which never leaves its owner and collects everything the courier brings back. Both are prepared beforehand. In
+**strict mode**, offered in the wizard, each member brings one courier stick per other member, tied to that pair
+for good, and nothing is overwritten between members.
 
 - **Raw, no filesystem.** A courier stick holds one GPT partition with pnp's own partition type GUID, and inside it
   pnp's own simple record format. Desktops don't auto-mount it, and the kernel never parses a filesystem that a
@@ -344,22 +400,29 @@ plus one "self" stick for their own material, all prepared beforehand.
   60-pnp-hwrng.rules does for /dev/hwrng. pnp still never needs root.
 - **Preparation:** `pnp-courier-setup DEVICE` is a short script run once per stick with sudo. It wipes the stick,
   makes the partition (sgdisk), and writes the courier header. gdisk goes in the .deb's `Suggests:`.
-- **Header:** `"PNPCR001"`, the owner, and who it's for ("Alice → for Bob"), set when the group is created at the
-  meeting. pnp refuses to write to a stick not addressed to this laptop's member. That catches mixed-up sticks. The
-  sticks carry physical labels too.
+- **Header:** `"PNPCR001"`, the owner, and the member it's currently visiting ("Alice's courier, now for Bob"),
+  set by the owner's laptop before each visit. pnp refuses to write to a stick not addressed to this laptop's
+  member. That catches mix-ups. The sticks carry physical labels with the owner's name too.
+- **Sized small:** the courier partition is made only as large as the largest single transfer, not the whole
+  stick, so overwriting it between visits takes seconds to a minute or two.
+- **Between visits:** the owner's laptop copies the returned data onto the self stick and checks it. Then it
+  overwrites the whole courier partition with fresh random data and **reads every block back** to confirm the
+  overwrite happened. A stick that ignores writes or fakes its capacity is refused, and `pnp-courier-setup` tests
+  real capacity when the stick is first set up, like the f3 tool.
 - **Records:** type, from, to, key set ID, length, data, and a BLAKE2b checksum. The checksum only catches
   accidents (a bad stick or a bad copy). Security comes from custody: a stick only ever passes between its owner
   and one other member.
-- **Custody:** Alice's stick for Bob goes from Alice to Bob's laptop and straight back to Alice. Nobody else's
-  laptop ever sees it. This is the "secret pairwise channel" the signature scheme needs. In particular, the signer
-  of a set of functions never handles a stick that carries a split of them.
+- **Custody:** on each visit, Alice's courier goes from Alice to one member's laptop and straight back to Alice.
+  What that member wrote is moved off and overwritten before the next member gets the stick. This is the "secret
+  pairwise channel" the signature scheme needs: the signer of a set of functions must never read a split of them.
+  With a reused stick, that holds only under the physical assumption above. In strict mode it holds outright.
 - **Afterwards:** keep each stick with the vault or destroy it. Overwriting flash isn't a reliable erase (wear
   levelling keeps old copies), the same caveat the docs give for shredding.
 
 # The meeting wizard
 
-Everyone brings **their own laptop** (under their full control, with a hardware RNG) and their courier sticks.
-Nobody brings a cylinder. pnp keeps key material in mlocked memory and on the sticks only, never on the laptop's
+Everyone brings **their own laptop** (under their full control, with a hardware RNG) and their courier and self
+sticks. Nobody brings a cylinder. pnp keeps key material in mlocked memory and on the sticks only, never on the laptop's
 disk. Every laptop runs the wizard, and the group moves through it together. Nothing secret is ever shown on
 screen, so people may watch each other's screens. What matters is who handles which stick.
 
@@ -370,16 +433,17 @@ screen, so people may watch each other's screens. What matters is who handles wh
    - Each screen shows a **check code**: 8 characters of a BLAKE2b hash of the roster and settings. Everyone reads
      theirs aloud, and they must all match. This only catches typos and a wrong member order. It isn't a security
      feature; being there in person is.
-   - Each laptop writes the courier headers onto its own sticks.
-2. **Round 1.** Each stick goes to the member it's for, whose laptop writes:
+   - Each laptop checks its own courier and self stick, and makes the rotation schedule.
+2. **Round 1** (rotation: each courier visits every other member once). The visited member's laptop writes:
    - its signer blocks for the stick's owner (every key set, plus the emergency set);
    - its pool randomness for the pair (R for both directions, every key set);
-   - its group pool contribution.
+   - its group pool contribution (later version).
 
-   The stick then goes straight back to its owner. Each laptop also writes its own signer files and its own R
-   values onto its self stick.
-3. **Round 2.** Each laptop now has, on its returned sticks, the blocks every other signer made for it. For each
-   signer, key set and slot, it makes the random split, using **its own hardware RNG**. The sticks go out again,
+   After each visit the stick goes straight back to its owner, whose laptop moves the data onto the self stick,
+   then overwrites the courier and reads it back before the next visit. Each laptop also writes its own signer
+   files and its own R values onto its self stick.
+3. **Round 2.** Each laptop now has, on its self stick, the blocks every other signer made for it. For each
+   signer, key set and slot, it makes the random split, using **its own hardware RNG**. The couriers rotate again,
    and each member's laptop writes:
    - its splits for the stick's owner;
    - a test signature from its first slot of each key set (that slot is given up);
@@ -392,12 +456,14 @@ screen, so people may watch each other's screens. What matters is who handles wh
 5. **Kill cards.** Each laptop writes the member's emergency slots onto their kill card stick, and reminds them to
    keep it apart from their cylinders.
 
-Rounds 1 and 2 each pass n−1 sticks out and back per person, all in parallel. The wizard shows who is holding what
-("waiting for your stick from Carol").
+Each round runs on a **rotation schedule**: at every step, each member's courier is at a different member's laptop.
+A round takes n−1 steps, with every laptop busy at once, and between steps the owners move data off and overwrite.
+The wizard shows each person where their courier goes next and whose courier they should be holding ("give your
+courier to Carol; you should have Dave's").
 
 ## At home, alone: import
 
-- **Import:** `pnp --import`, or the TUI's "Import from a meeting", reads the self stick and the returned sticks,
+- **Import:** `pnp --import`, or the TUI's "Import from a meeting", reads the self stick, which holds everything,
   checks them against the check code, and combines them: pool = R_A ⊕ R_B, and the verify files from the splits.
   It writes the group onto the cylinder you choose, by trust label (atomic: part files, then rename, as now).
 - **Placing key sets:** the wizard suggests the current period on the daily cylinder and future periods on the
@@ -436,13 +502,13 @@ names.local           optional private nicknames, never shared (anonymous groups
 set-<KSID>/sign       magic PNPSG001, key set ID, my index, ψ, next-slot counter, then ψ × N²k functions (49 bytes)
 set-<KSID>/verify.<j> magic PNPVF001, key set ID, signer j, ψ, then per slot: N sets × k × (u32 position + function)
 set-<KSID>/used.<j>   slots of signer j already seen, with the message's ID: catches a slot used twice
-set-<KSID>/pool.<a>-<b>  magic PNPPL001, pool ID, from a to b, size, next-offset counter, then pad (wiped as used)
-set-<KSID>/pool.group the group pool: per-sender regions and counters
+set-<KSID>/pool.<a>-<b>  magic PNPPL001, pool ID, from a to b, size, counters, locator area, then pad (wiped as used)
+set-<KSID>/pool.group the group pool, later version: per-sender regions and counters
 set-<KSID>/pool.used  ranges received per incoming pool: catches replays and reused pad
 emergency/            the emergency key set (sign, verify.<j>, used.<j>), no window
 kills/                notices received, with their state (warning, killed)
 FILE.pnp.sig          magic PNPUS001, key set ID, signer index, slot (u32), k (u32), then N²k tags, 4 per byte
-FILE.pnp              magic PNPGM001, key set ID, pool ID, offset (u64), length (u64), ciphertext, 16-byte tag
+FILE.pnp              locator (16), offset XOR mask (8), ciphertext, 16-byte tag (no magic: it would link messages)
 FILE.pnp-kill         magic PNPKL001, the notice frame, then its signatures
 ```
 
@@ -458,7 +524,7 @@ pnp --sign FILE [--group G]            → FILE.pnp.sig (the current key set's n
 pnp --verify-sig FILE [SIG]            → "signed by Alice, accepted at level 1 (key set 2030-05, slot 17)"
 pnp --verify-sig FILE --level -1       the dispute check: one person's vote
 pnp --send FILE --to bob [--sign]      → FILE.pnp from the me→bob pool (unsigned: deniable)
-pnp --send FILE --to group             → FILE.pnp from my region of the group pool (always signed)
+pnp --send FILE --to group             → one message per member (group pool: later version)
 pnp FILE.pnp                           a group message: checks, decrypts, verifies, wipes the pad
 pnp --kill SCOPE [--since …]           makes a kill notice (emergency slot) → FILE.pnp-kill
 pnp --kill-sign FILE.pnp-kill          adds my signature to someone's notice
@@ -477,14 +543,16 @@ pnp-courier-setup DEVICE               (sudo) prepare a courier stick or kill ca
 - **Recipients keep their verify keys** for disputes, until the dispute period ends.
 - **Refuse with no slots or pad left.** Say "meet again".
 - **The split randomness comes from the recipient's own hardware RNG,** never from the signer's machine.
-- **Courier custody:** a stick only ever passes between its owner and the one member it's for. Cylinders never go
+- **Courier custody:** a courier goes from its owner to one member and straight back. Before its next visit, it's
+  moved off, overwritten and read back. Never hand a stick on without the read-back passing. Cylinders never go
   to meetings, and are plugged only into machines under the owner's full control.
 - **Windows:** send only inside the window, and receive only while the receiver's own clock is inside the window
   plus the grace days. Wipe unused slots and pad when a window closes.
 - **Kills:** fewer signatures than the threshold only warn. Reaching the threshold kills for good. Check for
   notices before every group action, and pass them on in every message.
 - **Never encrypt-then-sign.** Names go inside both the signature and the encryption.
-- **Group-pool messages are always signed.**
+- **Group-pool messages are always signed** (later version).
+- **Message files carry no magic or IDs,** only the one-time locator.
 - **No activity log.** Counters and the clock guard date only.
 - **Constant-time comparison isn't needed for tags,** because they're public once released. Key handling follows
   the usual rules: mlock, wipe, 0600.
@@ -508,19 +576,39 @@ pnp-courier-setup DEVICE               (sudo) prepare a courier stick or kill ca
 9. **Docs:** README section, man page, threat-model.md, format.md, code-cylinder.md (several cylinders by trust level,
    courier sticks), and the site's P = NP page.
 
+# Decisions (walked through with the user, 2026-11-27)
+
+1. **Group size:** the wizard offers 3-9 people. Above 9, the number is typed by hand and pnp shows a storage and
+   handoff warning. There's no hard cap below 255.
+2. **Amounts per key set:** the wizard asks the expected use, suggests values scaled to the period, and shows the
+   storage cost first.
+3. **Cheaters vs hand-ons:** default to the most cheaters tolerated, plus the most hand-ons that leaves room for.
+   The wizard shows the alternative and its cost. pnp flags inexact signatures.
+4. **Kill threshold:** set at the meeting from 2 up to n − ω (the honest members, so cheaters can't block a real
+   kill), default 2.
+5. **Below the threshold:** warn and ask each time. Every send or sign with the reported keys asks "send anyway?
+   [y/N]", and the CLI refuses without `--despite-warning`. Messages received from the reported scope are labelled
+   "received while a compromise report was pending". Nothing is wiped until the threshold is reached.
+6. **Grace days:** set at the meeting, 0-30, default 3. The docs advise stopping sending near a window's end when
+   delivery is slow.
+7. **Dispute period:** verify keys are kept indefinitely by default. The group may set a period at the meeting
+   (for example 1 year). When it ends, pnp wipes them, first saying which signatures stop being checkable.
+8. **Courier sticks:** one per person, overwritten and read back between visits, on a rotation schedule. This
+   rests on a stated physical assumption (no reading flash below the USB interface while holding a stick). Strict
+   mode (one stick per pair) is offered in the wizard for groups that won't rely on it.
+9. **Named or anonymous:** an explicit choice on the wizard's first screen, with no default.
+10. **Top-ups without meeting again:** later, not in the first version.
+11. **The group pool:** later, not in the first version. A message to everyone is sent separately on each pairwise
+    pool.
+12. **Signed or unsigned pairwise messages:** the group sets its default at the meeting, and the wizard suggests
+    unsigned (deniable). `--sign` signs one message. In a signed-by-default group, every message is signed, and the
+    wizard sizes the signature amounts to cover every message.
+13. **Hiding which pair is talking:** in the first version, with one-time locators (see "Message headers reveal
+    nothing"). Size and timing still show.
+14. **Field:** keep mac.c's 2^127 − 1. 2^61 − 1 measured about 2.1× faster (1.33 against 2.86 ms per MiB per
+    function, before constant-time hardening). That isn't enough to justify a second field to audit. It can be
+    revisited later behind a format number.
+
 # Open decisions
 
-- Group size cap (9? 16?) and the default amounts per key set (signatures, pool size).
-- l_max: default 1. Is l_max = 2 wanted (twice the key size)?
-- Kill threshold: settable at the meeting, from 2 up to a majority, or always 2?
-- A kill warning (below the threshold): warn only, or stop sending automatically until it's resolved?
-- Default grace days for delivery (3?) and the default dispute period.
-- Courier sticks: one per other member (strict), or one per person, overwritten between members (cheaper, but the
-  flash chip may keep remnants)?
-- Named or anonymous: an explicit choice with no default (proposed), or anonymous by default?
-- Whether the later top-ups over pairwise pools are in the first version.
-- Whether the group pool is in the first version.
-- Unsigned pairwise messages as the default (deniable), or signed by default?
-- Hiding which pair is talking: pool IDs in the clear for now, or a later version.
-- 2^61 − 1 instead of 2^127 − 1 for the first stage: about 3-4× faster with ε still ≈ 1/4. It's a second field to
-  audit, though, so the default is to reuse mac.c.
+None left from the first walk-through. New ones get added here as the design is reviewed.
