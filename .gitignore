@@ -2,6 +2,9 @@
 CLAUDE.md
 .claude/settings.local.json
 
+# Planning notes (provisional; TODO.md has the public summary)
+/todo/
+
 # Environment / secrets
 .env
 .env.*

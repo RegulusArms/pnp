@@ -15,16 +15,8 @@ C. E. Shannon, "Communication Theory of Secrecy Systems", *Bell System Technical
 1949.
 
 - **Used:** the one-time pad's information-theoretic secrecy, and its conditions (a truly random pad, as long as
-  the message, used once, kept secret). These are the four rules in README and CLAUDE.md.
-- **Where:** the whole design: README "Why OTP", docs/threat-model.md.
-
-### Carter and Wegman 1979: universal hashing
-
-J. L. Carter, M. N. Wegman, "Universal classes of hash functions", *Journal of Computer and System Sciences*
-18(2), pp. 143-154, 1979.
-
-- **Used:** the definition of universal hash families, which the ε-ASU₂ definition in Amiri et al. builds on.
-- **Where:** docs/group.md (design).
+  the message, used once, kept secret). These are the four conditions in README "What the guarantee rests on".
+- **Where:** the whole design: README "What the guarantee rests on", docs/threat-model.md.
 
 ### Wegman and Carter 1981: one-time MAC
 
@@ -35,87 +27,8 @@ Computer and System Sciences* 22(3), pp. 265-279, 1981.
   secure.
 - **Where:** src/mac.c, docs/format.md "The integrity check", docs/threat-model.md.
 - **Still to pin:** the exact source for mac.c's polynomial-evaluation forgery bound (L/p for L blocks mod
-  2^127 − 1) isn't recorded yet. It's a standard result (for example Bierbrauer et al. 1994, below). Record the
-  paper and theorem when it's checked.
-
-### Bierbrauer, Johansson, Kabatianskii and Smeets 1994: compact ε-ASU₂ families
-
-J. Bierbrauer, T. Johansson, G. Kabatianskii, B. Smeets, "On families of hash functions via geometric codes and
-concatenation", *Advances in Cryptology: CRYPTO '93*, LNCS 773, Springer, pp. 331-342, 1994.
-
-- **Used:** cited by Amiri et al. (Proposition 1) for the key size of an ε-ASU₂ family. pnp doesn't use their
-  construction. It uses the two-stage family in docs/group.md instead.
-- **Where:** docs/group.md (background only).
-
-### Stinson 1994: composing universal hash families
-
-D. R. Stinson, "Universal hashing and authentication codes", *Designs, Codes and Cryptography* 4(4),
-pp. 369-380, 1994.
-
-- **Used:** the composition result: an ε₁-almost-universal family followed by an ε₂-almost-strongly-universal
-  family is (ε₁ + ε₂)-ASU₂. It gives pnp's signature hash ε = L/p + 1/4.
-- **Where:** docs/group.md "pnp's hash family".
-
-### Chaum and Roijakkers 1990: unconditionally secure signatures
-
-D. Chaum, S. Roijakkers, "Unconditionally-secure digital signatures", *Advances in Cryptology: CRYPTO '90*,
-LNCS 537, Springer, pp. 206-214, 1991.
-
-- **Used:** background only (the first USS scheme). Not implemented.
-- **Where:** docs/group.md.
-
-### Hanaoka, Shikata, Zheng and Imai 2000: USS with a trusted authority
-
-G. Hanaoka, J. Shikata, Y. Zheng, H. Imai, "Unconditionally secure digital signature schemes admitting
-transferability", *Advances in Cryptology: ASIACRYPT 2000*, LNCS 1976, Springer, pp. 130-142, 2000.
-
-- **Used:** the alternative that was considered and rejected, because it needs a trusted authority that knows
-  everyone's keys.
-- **Where:** docs/group.md "The scheme".
-
-### Amiri, Abidin, Wallden and Andersson 2018: USS from universal hashing
-
-R. Amiri, A. Abidin, P. Wallden, E. Andersson, "Efficient unconditionally secure signatures using universal
-hashing", *Applied Cryptography and Network Security (ACNS 2018)*, LNCS 10892, Springer, pp. 143-162, 2018.
-doi:10.1007/978-3-319-93387-0_8. Open copy:
-https://www.esat.kuleuven.be/cosic/publications/article-2892.pdf
-
-- **Used:**
-  - Definitions 1-9: the USS scheme, verification levels, the ε-ASU₂ family, majority-vote disputes, forging,
-    non-transferability and repudiation.
-  - Section 3: the protocol. The signer makes N²k functions. Each recipient splits its Nk at random into N sets
-    of k and passes one set to each other recipient. The acceptance test is test (1) and rule (2), with
-    δ_l = 1/2 + (l+1)·d_R and d_R = (ω−1)/N.
-  - Theorems 1-3: the forging, non-transferability and repudiation bounds behind pnp's parameter table.
-  - Section 5.1: the extended protocol, one distribution per message.
-  - The honest-majority condition ω < (N+1)/2.
-  - Section 5.2's example (51 people, k = 1700 at 10^−10), used as a sanity check on pnp's numbers.
-- **Changed by pnp:**
-  - The hash family: 2-bit tags with ε = 1/4 + L/p, instead of the paper's ε = 2/|T|.
-  - The "≈" in Theorems 1-3 is replaced by the rigorous union bound 1−(1−p)^n ≤ np.
-- **Where:** docs/group.md. When it's built: src/uss.c and the parameter calculator.
-
-### Davis 2001: sign-and-encrypt done wrong
-
-D. Davis, "Defective Sign & Encrypt in S/MIME, PKCS#7, MOSS, PEM, PGP, and XML", *Proceedings of the 2001 USENIX
-Annual Technical Conference*, pp. 65-78, 2001. Open copy:
-https://www.usenix.org/legacy/events/usenix01/full_papers/davis/davis_html/index.html
-
-- **Used:**
-  - §1.1, surreptitious forwarding: after sign-then-encrypt, the recipient can re-encrypt the signed message to a
-    third party, who will assume it was sent to them directly.
-  - §1.2, "Don't Sign Ciphertexts": the case against encrypt-then-sign.
-  - §3.2, the naming repairs: sign the recipient's name along with the message (§3.2, on I'Anson's X.509 repair),
-    and put the sender's name inside the encryption (eqn 19).
-  - pnp's message frame puts both names inside both layers and signs before encrypting.
-- **Changed by pnp:**
-  - The paper is about public-key mail. In pnp, the encryption is an OTP with pairwise pools, and the signature is
-    the group scheme.
-  - Encrypt-then-sign is worse with an OTP than in the paper's setting: a recipient can make up a pad that opens a
-    ciphertext to any text at all.
-- **Checked:** §§1-4.3 were read verbatim. §5 ("Repair Options") hasn't been read in full yet (still to pin), so
-  nothing here relies on it.
-- **Where:** docs/group.md "Sending: sign, then encrypt".
+  2^127 − 1) isn't recorded yet. It's a standard result for polynomial-evaluation hashing. Record the paper and
+  theorem once it has been checked.
 
 ### Boneh, Corrigan-Gibbs and Schechter 2016: Balloon hashing
 
