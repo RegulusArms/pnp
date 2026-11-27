@@ -19,17 +19,17 @@ young program into a hardened one.
 
 ## Pairs and groups
 
-- [ ] **Seals, signatures and encrypted messages for pairs and groups, secure even if P = NP.** People meet in
-  person and swap key material on courier sticks. Afterwards they can send each other one-time-pad messages.
-  - **Pairs:** two people get seals, one-time MACs that nobody else can forge. A seal proves nothing to anyone
-    outside the pair.
-  - **Groups of 3 or more:** any member can sign a file so that every other member can check it, nobody can forge
-    it, and the signer can't deny it. The signatures use an unconditionally secure scheme built on universal
-    hashing (Amiri, Abidin, Wallden and Andersson, ACNS 2018), so they rely on an honest majority and a fixed
-    group instead of hard problems.
+The first version is in 0.1.0-alpha.8 ([docs/group.md](docs/group.md)). Still to come:
 
-  Key sets with validity windows, kill notices for stolen keys, and `pnp --info` for every key type are part of
-  the design.
+- [ ] **A group pool:** one pad shared by the whole group, so a message to everyone is one ciphertext instead of one
+  per member. Messages on it would always be signed, since every member could make its MAC.
+- [ ] **Top-ups without meeting again:** new key sets sent over the pairwise pools (each uses as much pad as it
+  carries).
+- [ ] **Strict courier mode in the wizard:** one courier per pair, kept for good, for groups that won't rely on the
+  overwritten-courier assumption.
+- [ ] **Group actions in the interactive mode** (`pnp` alone in a terminal). For now the meeting wizard is
+  `pnp --meet`.
+- [ ] **Telling a member who missed a re-meeting** that a newer generation exists, when something from it arrives.
 
 ## Risky quality-of-life improvements
 

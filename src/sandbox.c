@@ -205,7 +205,7 @@ struct ll_path_beneath {
 
 #ifndef PNP_SANITIZED
 /* -1 if Landlock isn't there (or is turned off); otherwise its ABI version */
-static int landlock(char *const *dirs, int ndirs)
+static int landlock(char *const *dirs, int ndirs, uint64_t allowed)
 {
     long abi = syscall(__NR_landlock_create_ruleset, NULL, 0, LL_CREATE_RULESET_VERSION);
     if (abi < 1)
@@ -233,7 +233,7 @@ static int landlock(char *const *dirs, int ndirs)
         return -1;
     /* in each output folder: create the part files' real names, remove (parts, old files put aside), rename within
      * the folder (needs no LL_FS_REFER: that's only for moving between folders), and open it to fsync it */
-    struct ll_path_beneath pb = {LL_FS_MAKE_REG | LL_FS_REMOVE_FILE | LL_FS_READ_DIR, -1};
+    struct ll_path_beneath pb = {allowed & attr.handled_access_fs, -1};
     int ok = 1;
     for (int i = 0; i < ndirs && ok; i++) {
         pb.parent_fd = open(dirs[i], O_PATH | O_DIRECTORY | O_CLOEXEC);
@@ -270,9 +270,26 @@ void pnp_sandbox_work(char *const *dirs, int ndirs, struct pnp_sandbox_state *st
     (void)ndirs;
     st->landlock_abi = -1;
 #else
-    st->landlock_abi = landlock(dirs, ndirs);
+    st->landlock_abi = landlock(dirs, ndirs, LL_FS_MAKE_REG | LL_FS_REMOVE_FILE | LL_FS_READ_DIR);
 #ifdef PNP_AUDIT_ARCH
     st->seccomp = load_filter(PNP_SB_WORK) == 0;
 #endif
+#endif
+}
+
+int pnp_sandbox_dirs(char *const *dirs, int ndirs)
+{
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0)
+        return -1;
+#ifdef PNP_SANITIZED
+    (void)dirs;
+    (void)ndirs;
+    return -1;
+#else
+    /* everything a group command does in its folders: read and write files, make and remove files and folders,
+     * list them, cut files short. Nothing outside them, and never running anything. */
+    return landlock(dirs, ndirs,
+                    LL_FS_READ_FILE | LL_FS_WRITE_FILE | LL_FS_READ_DIR | LL_FS_REMOVE_FILE | LL_FS_REMOVE_DIR |
+                        LL_FS_MAKE_REG | LL_FS_MAKE_DIR | LL_FS_TRUNCATE);
 #endif
 }

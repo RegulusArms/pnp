@@ -284,6 +284,21 @@ matters to you, or the drive is dead, destroy it physically: open it and drill o
 **Flash drives and SSDs** that ever held keys can't be reliably erased by software. Destroy them physically when
 you're done with them.
 
+## Groups on a code cylinder
+
+If you're in a pair or group ([group.md](group.md)), your cylinder also holds its folder, `pnp-group-<ID>`. It
+follows different rules from ordinary keys:
+
+- **Never back it up, and never restore it.** A group's keys are used up as you go: every seal, signature and
+  message burns a slot or a run of pad. A restored copy would bring used ones back, and using one twice breaks the
+  guarantee. If the cylinder dies, report it with a kill notice and meet again.
+- **The cylinder never goes to a meeting.** Meetings use courier sticks, and the import happens at home, alone.
+- **Several cylinders by trust level:**
+  - a daily one with the current period;
+  - a vault with future periods (`pnp --move KEYSET --to VAULT`) and your kill card;
+  - one per high-trust group.
+- **If it's lost or stolen,** use your kill card, or ask two members, to kill the keys that were on it.
+
 ## Summary
 
 - pnp's keys are its only secret, so how you store them is pnp's weakest link. Whoever has a key and its

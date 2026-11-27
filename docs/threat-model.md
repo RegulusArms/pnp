@@ -105,6 +105,23 @@ The integrity bound is a theorem about the Wegman-Carter construction; it holds 
 tests/test_mac.c and tests/xorcheck.c recompute every tag independently (a different multiplication method), and
 the format parser is fuzzed. An independent audit is still planned (TODO.md).
 
+### 7. Pairs and groups (docs/group.md)
+
+Seals and messages rest on the same one-time MAC and pad as everything else, with keys swapped at a meeting. Group
+signatures add three assumptions of their own:
+
+- **An honest majority:** at most ω members cheat (set at the meeting, shown by `pnp --info`). Members who leave
+  or are removed count against ω.
+- **Custody of the splits:** no signer ever reads how the recipients split its functions. A courier only passes
+  between its owner and one member. With one courier per person, reused between members, this also assumes nobody
+  reads the stick's flash chip below its USB interface while holding it. pnp overwrites and reads back every
+  courier between visits.
+- **No restored key files:** a signing slot or pad range used twice breaks everything. pnp burns each one before
+  using it, but a group folder restored from a backup would bring used ones back.
+
+Validity windows rely on honest members' clocks (each checks messages against its own clock), not on cryptography.
+Who talks to whom is hidden from outsiders, but file sizes and timing aren't.
+
 ## Where each defence lives
 
 | Defence | Code | Checked by |
@@ -119,3 +136,8 @@ the format parser is fuzzed. An independent audit is still planned (TODO.md).
 | `--protect` (computational only) | src/protect.c, kdf.c, blake2b.c, chacha20.c | tests/test_kdf.c (RFC vectors) |
 | Terminal safety (file names, key input) | src/main.c pnp_clean, src/tui.c, src/keys.c | run.sh, tests/fuzz/fuzz_keys.c |
 | Key drive identity | src/tui.c | run.sh |
+| Seals and messages (pairs, groups) | src/gmsg.c, group.c | tests/group.sh |
+| Group signatures, parameters | src/uss.c, meeting.c | tests/test_uss.c (independent vectors, exhaustive check), group.sh |
+| Meetings, courier sticks | src/meeting.c, courier.c, gmeet.c | tests/group.sh, tests/fuzz/fuzz_courier.c |
+| Kill notices, leaving | src/kill.c | tests/group.sh, tests/fuzz/fuzz_kill.c |
+| Group file parsing | src/group.c | tests/fuzz/fuzz_group.c |

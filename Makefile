@@ -45,10 +45,12 @@ HARDEN_LD := -pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack
 # the source folder's path is left out of the binary, so where it's built doesn't change it
 REPRO := -ffile-prefix-map=$(CURDIR)=.
 ALL_CFLAGS := $(WARN) $(HARDEN) $(REPRO) -pthread $(CFLAGS) -DPNP_VERSION='"$(VERSION)"'
-ALL_LDFLAGS := $(HARDEN_LD) -pthread $(LDFLAGS)
+# -lm: the signature scheme's parameter calculator (uss.c: lgamma, exp, log), part of glibc
+ALL_LDFLAGS := $(HARDEN_LD) -pthread $(LDFLAGS) -lm
 
-SRC := src/main.c src/tui.c src/keys.c src/format.c src/sandbox.c src/progress.c src/rng.c src/fileio.c src/mac.c src/protect.c src/kdf.c src/blake2b.c src/chacha20.c
-HDR := src/pnp.h src/sandbox.h src/keys.h src/progress.h src/format.h src/rng.h src/fileio.h src/mac.h src/protect.h src/kdf.h src/blake2b.h src/chacha20.h build/wordlist.h
+GROUP_SRC := src/group.c src/courier.c src/uss.c src/meeting.c src/gmsg.c src/kill.c src/gcli.c src/gmeet.c
+SRC := src/main.c src/tui.c src/keys.c src/format.c src/sandbox.c src/progress.c src/rng.c src/fileio.c src/mac.c src/protect.c src/kdf.c src/blake2b.c src/chacha20.c $(GROUP_SRC)
+HDR := src/group.h src/courier.h src/uss.h src/meeting.h src/gmsg.h src/kill.h src/gcli.h src/pnp.h src/sandbox.h src/keys.h src/progress.h src/format.h src/rng.h src/fileio.h src/mac.h src/protect.h src/kdf.h src/blake2b.h src/chacha20.h build/wordlist.h
 KDF_SRC := src/kdf.c src/blake2b.c src/chacha20.c
 
 .PHONY: all test sanitize analyze install install-udev uninstall deb clean fuzz fuzz-run
@@ -79,6 +81,9 @@ build/test_mac: tests/test_mac.c src/mac.c src/mac.h | build
 build/test_kdf: tests/test_kdf.c $(KDF_SRC) src/protect.c src/kdf.h src/blake2b.h src/chacha20.h src/protect.h | build
 	$(CC) $(ALL_CFLAGS) -Isrc -o $@ tests/test_kdf.c $(KDF_SRC) src/protect.c $(ALL_LDFLAGS)
 
+build/test_uss: tests/test_uss.c tests/uss_vectors.h src/uss.c src/uss.h src/mac.c src/blake2b.c src/group.c src/fileio.c | build
+	$(CC) $(ALL_CFLAGS) -DPNP_TEST -Isrc -Itests -o $@ tests/test_uss.c src/uss.c src/mac.c src/blake2b.c src/group.c src/fileio.c $(ALL_LDFLAGS)
+
 build/xorcheck: tests/xorcheck.c | build
 	$(CC) $(ALL_CFLAGS) -o $@ tests/xorcheck.c $(ALL_LDFLAGS)
 
@@ -86,11 +91,14 @@ build/xorcheck: tests/xorcheck.c | build
 # tests/fuzz/replay.c with the normal compiler; `make fuzz` builds them for libFuzzer (clang), and
 # `make fuzz-run FUZZ_SECONDS=60` fuzzes each for that long from its seeds (tests/fuzz/seeds.sh), keeping what it
 # finds in build/fuzz/corpus. A crash leaves a crash-* file: replay it with build/fuzz/replay_NAME FILE.
-FUZZ := header keys passfile verify
+FUZZ := header keys passfile verify group kill courier
 FUZZ_SRC_header := src/format.c src/protect.c src/rng.c $(KDF_SRC)
 FUZZ_SRC_keys := src/keys.c
 FUZZ_SRC_passfile := src/protect.c $(KDF_SRC)
 FUZZ_SRC_verify := $(SRC)
+FUZZ_SRC_group := src/group.c src/uss.c src/mac.c src/blake2b.c src/fileio.c
+FUZZ_SRC_kill := src/kill.c src/gmsg.c src/uss.c src/group.c src/mac.c src/blake2b.c src/fileio.c
+FUZZ_SRC_courier := src/courier.c src/blake2b.c src/fileio.c
 FUZZ_FLAGS := -DPNP_FUZZ -DPNP_TEST -Dmain=pnp_cli_main -Isrc -Ibuild
 FUZZ_SECONDS ?= 60
 CLANG ?= clang
@@ -116,7 +124,7 @@ fuzz-run: fuzz build/fuzz/seeds
 			-artifact_prefix=build/fuzz/crash-$$f- build/fuzz/corpus/$$f build/fuzz/seeds/$$f || exit 1; \
 	done
 
-test: build/pnp build/pnp-test build/test_health build/test_mac build/test_kdf build/xorcheck $(FUZZ:%=build/fuzz/replay_%)
+test: build/pnp build/pnp-test build/test_health build/test_mac build/test_kdf build/test_uss build/xorcheck $(FUZZ:%=build/fuzz/replay_%)
 	tests/run.sh
 
 # Memory errors and undefined behaviour (out-of-bounds, use-after-free, overflow...) stop the run. build/ is wiped
@@ -142,31 +150,38 @@ analyze: build/wordlist.h
 
 install: build/pnp
 	install -D -m 755 build/pnp $(DESTDIR)$(PREFIX)/bin/pnp
+	install -D -m 755 scripts/pnp-courier-setup $(DESTDIR)$(PREFIX)/sbin/pnp-courier-setup
 	install -d $(DESTDIR)$(PREFIX)/share/man/man1
 	sed 's/@VERSION@/$(VERSION)/' man/pnp.1 | gzip -9n > $(DESTDIR)$(PREFIX)/share/man/man1/pnp.1.gz
+	install -d $(DESTDIR)$(PREFIX)/share/man/man8
+	sed 's/@VERSION@/$(VERSION)/' man/pnp-courier-setup.8 | gzip -9n > $(DESTDIR)$(PREFIX)/share/man/man8/pnp-courier-setup.8.gz
 
 install-udev:
 	install -D -m 644 data/60-pnp-hwrng.rules $(DESTDIR)$(UDEV_RULES_DIR)/60-pnp-hwrng.rules
+	install -D -m 644 data/61-pnp-courier.rules $(DESTDIR)$(UDEV_RULES_DIR)/61-pnp-courier.rules
 	@if [ -z "$(DESTDIR)" ]; then \
 		getent group pnp >/dev/null || groupadd --system pnp; \
-		udevadm control --reload-rules && udevadm trigger --subsystem-match=misc --sysname-match=hw_random; \
+		udevadm control --reload-rules && udevadm trigger --subsystem-match=misc --sysname-match=hw_random && \
+			udevadm trigger --subsystem-match=block; \
 		echo "Now join the pnp group: sudo usermod -aG pnp \$$USER, then log out and back in."; \
 	fi
 
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/pnp $(DESTDIR)$(PREFIX)/share/man/man1/pnp.1.gz
-	rm -f $(DESTDIR)$(UDEV_RULES_DIR)/60-pnp-hwrng.rules
+	rm -f $(DESTDIR)$(PREFIX)/bin/pnp $(DESTDIR)$(PREFIX)/sbin/pnp-courier-setup $(DESTDIR)$(PREFIX)/share/man/man1/pnp.1.gz \
+		$(DESTDIR)$(PREFIX)/share/man/man8/pnp-courier-setup.8.gz
+	rm -f $(DESTDIR)$(UDEV_RULES_DIR)/60-pnp-hwrng.rules $(DESTDIR)$(UDEV_RULES_DIR)/61-pnp-courier.rules
 
 # The .deb, built with dpkg-deb from a staging folder. Depends on the newest glibc symbol version the binary
 # actually uses, so a package built on an old release installs on every newer one.
 DEB := build/pnp_$(DEB_VERSION)_$(ARCH).deb
 deb: $(DEB)
 
-$(DEB): build/pnp man/pnp.1 data/60-pnp-hwrng.rules debian/control.in debian/postinst debian/postrm debian/copyright CHANGELOG.md README.md
+$(DEB): build/pnp man/pnp.1 man/pnp-courier-setup.8 data/60-pnp-hwrng.rules data/61-pnp-courier.rules scripts/pnp-courier-setup debian/control.in debian/postinst debian/postrm debian/copyright CHANGELOG.md README.md
 	rm -rf build/deb && mkdir -p build/deb/DEBIAN
 	$(MAKE) --no-print-directory install DESTDIR=$(CURDIR)/build/deb PREFIX=/usr
 	strip --strip-unneeded build/deb/usr/bin/pnp
 	install -D -m 644 data/60-pnp-hwrng.rules build/deb/usr/lib/udev/rules.d/60-pnp-hwrng.rules
+	install -D -m 644 data/61-pnp-courier.rules build/deb/usr/lib/udev/rules.d/61-pnp-courier.rules
 	install -D -m 644 debian/copyright build/deb/usr/share/doc/pnp/copyright
 	gzip -9n < CHANGELOG.md > build/deb/usr/share/doc/pnp/CHANGELOG.md.gz
 	printf 'pnp (%s) unstable; urgency=medium\n\n  * See CHANGELOG.md.gz.\n\n -- RegulusArms <ross@regulusarms.com>  %s\n' \

@@ -4,6 +4,7 @@ Architecture: @ARCH@
 Maintainer: RegulusArms <ross@regulusarms.com>
 Installed-Size: @SIZE@
 Depends: libc6 (>= @GLIBC@), passwd
+Suggests: gdisk
 Section: utils
 Priority: optional
 Homepage: https://pnp.regulusarms.com
@@ -19,4 +20,10 @@ Description: one-time pad file encryption that stays secure even if P = NP
  will be written, and which key on the key drive will be used. Keys can be
  split into shares, and optionally locked with a passphrase (a
  computationally secure extra, not part of the P = NP claim).
- Members of the pnp group may read /dev/hwrng.
+ .
+ People who meet in person can also seal files (pairs) and sign them
+ (groups of 3 or more) so that nobody else can forge them, and send each
+ other one-time-pad messages; the key material travels on raw courier
+ sticks (pnp-courier-setup, which needs gdisk).
+ .
+ Members of the pnp group may read /dev/hwrng and use pnp's courier sticks.

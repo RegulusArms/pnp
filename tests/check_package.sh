@@ -29,6 +29,9 @@ check 'apt-get install -y -qq "$PKG" >/tmp/install.log 2>&1 || { tail -20 /tmp/i
 check '[[ "$(pnp --version)" == "pnp "* ]]' "pnp runs and reports its version"
 check '[[ -f /usr/lib/udev/rules.d/60-pnp-hwrng.rules ]] && grep -q "KERNEL==\"hw_random\", GROUP=\"pnp\", MODE=\"0640\"" \
        /usr/lib/udev/rules.d/60-pnp-hwrng.rules' "the udev rule is installed"
+check '[[ -f /usr/lib/udev/rules.d/61-pnp-courier.rules ]] && grep -q "ec8e96c1-785d-4e11-b871-78e0064ee05e" \
+       /usr/lib/udev/rules.d/61-pnp-courier.rules && [[ -x /usr/sbin/pnp-courier-setup ]]' \
+    "the courier stick rule and pnp-courier-setup are installed"
 check 'getent group pnp >/dev/null' "the pnp group exists"
 # from the package's file list: Ubuntu's container images are set up not to install manuals and docs (dpkg path-exclude)
 check 'dpkg -L pnp | grep -qx /usr/share/man/man1/pnp.1.gz && dpkg -L pnp | grep -qx /usr/share/doc/pnp/copyright' \
@@ -52,7 +55,8 @@ else
         "without a hardware source, the installed pnp refuses to encrypt"
 fi
 
-check 'apt-get remove -y -qq pnp >/dev/null 2>&1 && [[ ! -e /usr/bin/pnp && ! -e /usr/lib/udev/rules.d/60-pnp-hwrng.rules ]]' \
+check 'apt-get remove -y -qq pnp >/dev/null 2>&1 && [[ ! -e /usr/bin/pnp && ! -e /usr/lib/udev/rules.d/60-pnp-hwrng.rules &&
+       ! -e /usr/lib/udev/rules.d/61-pnp-courier.rules && ! -e /usr/sbin/pnp-courier-setup ]]' \
     "removing the package removes pnp and the udev rule"
 check 'apt-get purge -y -qq pnp >/dev/null 2>&1 && ! getent group pnp >/dev/null && ! dpkg -l pnp 2>/dev/null | grep -q "^[ir]"' \
     "purging it removes the pnp group and leaves nothing behind"
