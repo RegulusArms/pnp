@@ -17,15 +17,19 @@ young program into a hardened one.
 - [ ] **Entropy measurements on more machines,** especially Intel CPUs and a USB TRNG (docs/entropy.md has the
   method).
 
-## Groups
+## Pairs and groups
 
-- [ ] **Signatures and encrypted messages for groups of 3 or more, secure even if P = NP.** Members meet once in
-  person and swap key material on courier sticks. Afterwards any member can sign a file so that every other member
-  can check it, nobody can forge it and the signer can't deny it, and members can send each other one-time-pad
-  messages. The signatures use an unconditionally secure scheme built on universal hashing (Amiri, Abidin,
-  Wallden and Andersson, ACNS 2018), so they rely on an honest majority and a fixed group instead of hard
-  problems. Key sets with validity windows, kill notices for stolen keys, and `pnp --info` for every key type are
-  part of the design.
+- [ ] **Seals, signatures and encrypted messages for pairs and groups, secure even if P = NP.** People meet in
+  person and swap key material on courier sticks. Afterwards they can send each other one-time-pad messages.
+  - **Pairs:** two people get seals, one-time MACs that nobody else can forge. A seal proves nothing to anyone
+    outside the pair.
+  - **Groups of 3 or more:** any member can sign a file so that every other member can check it, nobody can forge
+    it, and the signer can't deny it. The signatures use an unconditionally secure scheme built on universal
+    hashing (Amiri, Abidin, Wallden and Andersson, ACNS 2018), so they rely on an honest majority and a fixed
+    group instead of hard problems.
+
+  Key sets with validity windows, kill notices for stolen keys, and `pnp --info` for every key type are part of
+  the design.
 
 ## Risky quality-of-life improvements
 
