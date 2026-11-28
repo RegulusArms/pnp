@@ -2,6 +2,12 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.12
+
+- **Tests:** three checks that damage a file to make sure the damage is caught now flip a bit instead of writing
+  a fixed byte. The fixed byte was already there about once in 256 runs, so the file didn't change and the check
+  failed at random. pnp itself is unchanged.
+
 ## 0.1.0-alpha.11
 
 - **Interactive mode, pairs and groups screen:** choosing "Start or join a meeting", "Import a meeting" or "Check a

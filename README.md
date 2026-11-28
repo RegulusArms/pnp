@@ -8,7 +8,7 @@
 [![C11, libc only](https://img.shields.io/badge/C11-libc%20only-A8B9CC?logo=c&logoColor=white)](#building-from-source)
 [![License: MIT](https://img.shields.io/github/license/RegulusArms/pnp)](LICENSE)
 
-**Version 0.1.0-alpha.11**: early alpha. See [Installing](#installing).
+**Version 0.1.0-alpha.12**: early alpha. See [Installing](#installing).
 
 **An experimental information-theoretic cryptography and communications suite, designed for a world beyond
 computational security.** For Debian, Ubuntu, Linux Mint and other Debian-based systems.

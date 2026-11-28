@@ -566,7 +566,7 @@ check '"$PNP" --verify "$T/w/f.pnp" 2>"$T/err" && grep -q "is whole" "$T/err" &&
        [[ $(ls -A "$T/w" | wc -l) == 3 ]]' "--verify passes a whole ciphertext and writes nothing"
 check '"$PNP" -q --verify "$T/w/f.pnp" 2>"$T/err" && [[ ! -s "$T/err" ]]' "--verify -q answers with its exit status only"
 cp "$T/w/f.pnp" "$T/w/bad.pnp" && cp "$T/w/f.pnp.key" "$T/w/bad.pnp.key"
-printf '\x01' | dd of="$T/w/bad.pnp" bs=1 seek=5000 conv=notrunc 2>/dev/null
+flip "$T/w/bad.pnp" 5000
 check '! "$PNP" --verify "$T/w/bad.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" && [[ ! -e "$T/w/bad" ]]' \
     "--verify fails (exit 1) when one byte of the ciphertext changed"
 echo other >"$T/w/g" && "$PNP" -q "$T/w/g"

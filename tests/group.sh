@@ -138,7 +138,7 @@ check '! gx --receive "$W/m1.pnp" -o "$W/again" --groups "$G/g3/m2" >/dev/null 2
 gx --send "$W/m1" --to bob --groups "$G/g3/m1" -q -f
 check '! gx --receive "$W/m1.pnp" -o "$W/carol" --groups "$G/g3/m3" >/dev/null 2>&1 && [[ ! -e "$W/carol" ]]' \
     "a message for bob can't be read by carol"
-printf 'x' | dd of="$W/m1.pnp" bs=1 seek=30 conv=notrunc 2>/dev/null
+flip "$W/m1.pnp" 30
 check '! gx --receive "$W/m1.pnp" -o "$W/t1" --groups "$G/g3/m2" 2>"$T/err" && [[ ! -e "$W/t1" ]] && grep -q integrity "$T/err"' \
     "a changed message fails the integrity check and nothing is written"
 gx --send "$W/m20000" --to bob --sign --groups "$G/g3/m1" -q -f
@@ -214,7 +214,7 @@ check 'gx --info "$G/p/self.1" >"$T/out" && grep -q "self drive of member 1" "$T
     "--info on a self stick lists its records"
 check '! gx --import "$G/p/self.1" "$G/p/m1" 2>"$T/err" && grep -q "already exists" "$T/err"' \
     "a meeting can't be imported twice onto the same cylinder"
-cp --sparse=always "$G/p/self.1" "$T/self.bad" && printf 'Z' | dd of="$T/self.bad" bs=1 seek=300 conv=notrunc 2>/dev/null
+cp --sparse=always "$G/p/self.1" "$T/self.bad" && flip "$T/self.bad" 300
 mkdir -p "$G/imp"
 check '! gx --import "$T/self.bad" "$G/imp" 2>"$T/err" && grep -q damaged "$T/err" && ! ls "$G/imp" | grep -q .' \
     "a damaged record on a self stick is caught by its checksum, and nothing is imported"
