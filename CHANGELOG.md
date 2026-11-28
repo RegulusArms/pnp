@@ -2,6 +2,12 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.11
+
+- **Interactive mode, pairs and groups screen:** choosing "Start or join a meeting", "Import a meeting" or "Check a
+  new drive" with no pnp drives plugged in now says so on the screen, and explains how to prepare a drive. Before,
+  the message was hidden and the choice seemed to do nothing. The menu also stays on the item you chose.
+
 ## 0.1.0-alpha.10
 
 - **pnp is now described as what it has become:** an experimental information-theoretic cryptography and

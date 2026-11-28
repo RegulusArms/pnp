@@ -347,6 +347,9 @@ gx --send "$I/wa/note" --to bob --groups "$I/a/KEYS" -q -o "$I/wb/note.pnp"
 gtui "$I/wb" "$I/b" 'jjj\r\nq' # .., doc, doc.pnp.seal, note.pnp: Enter receives it
 check 'grep -q "From alice (deniable" "$T/gtui.out" && cmp -s "$I/wb/note" "$I/wa/note"' \
     "interactive: Enter on a group message receives it"
+gtui "$I/wa" "$I/a" 'pj\rqqq' # no drives yet: the meeting can't start, and the groups screen says why
+check 'grep -q "No pnp drives found" "$T/gtui.out"' \
+    "interactive: a meeting with no pnp drives plugged in says so on the groups screen"
 truncate -s 64M "$G/tuisticks/s1"
 gtui "$I/wa" "$I/a" 'pj\rqqq' # p: the groups screen; the second item, Start or join a meeting: the stick list
 check 'grep -q "Pairs and groups" "$T/gtui.out" && grep -q "Pair \"test group\": 2 members, you are alice" "$T/gtui.out" &&

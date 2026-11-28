@@ -1569,10 +1569,12 @@ static void scan_groups(void)
     }
 }
 
-/* a full-screen list to choose from: the index chosen, or -1 (Esc) */
-static int menu(const char *title, const char *intro, const char *const *items, int n)
+/* a full-screen list to choose from, starting at *pos (kept there on return): the index chosen, or -1 (Esc). A
+ * status message set by what the last choice ran (say, no drives plugged in) shows above the keys until the next
+ * key, so a choice that couldn't go ahead says why instead of seeming to do nothing. */
+static int menu_at(const char *title, const char *intro, const char *const *items, int n, int *pos_io)
 {
-    int pos = 0;
+    int pos = *pos_io >= 0 && *pos_io < n ? *pos_io : 0;
     for (;;) {
         begin_screen();
         header(title);
@@ -1586,9 +1588,15 @@ static int menu(const char *title, const char *intro, const char *const *items, 
             endl();
         }
         rule();
+        if (status[0]) {
+            cell(status_style, status, -1);
+            endl();
+        }
         cell(S_DIM, "Up/Down choose  Enter go  Esc back", -1);
         end_screen();
         int k = read_key();
+        status[0] = 0;
+        *pos_io = pos;
         if (pnp_stop || k == K_QUIT || k == K_ESC || k == 'q' || k == K_BKSP || k == K_LEFT)
             return -1;
         if (k == K_UP || k == 'k')
@@ -1597,7 +1605,14 @@ static int menu(const char *title, const char *intro, const char *const *items, 
             pos = pos < n - 1 ? pos + 1 : 0;
         else if (k == K_ENTER || k == K_RIGHT)
             return pos;
+        *pos_io = pos;
     }
+}
+
+static int menu(const char *title, const char *intro, const char *const *items, int n)
+{
+    int pos = 0;
+    return menu_at(title, intro, items, n, &pos);
 }
 
 /* runs one group command off the full screen, then waits for Enter: its exit status */
@@ -1653,7 +1668,8 @@ static char *pick_stick(const char *title, const char *intro, const char *exclud
     if (allow_none)
         items[m] = "none", keep[m++] = NULL;
     if (m == 0) {
-        set_status(c_yellow(), "No pnp drives plugged in: prepare them with sudo pnp-courier-setup /dev/sdX");
+        set_status(c_yellow(), "No pnp drives found. Plug them in; a new drive needs sudo pnp-courier-setup /dev/sdX "
+                                "first (man pnp-courier-setup)");
         return NULL;
     }
     int c = menu(title, intro, items, m);
@@ -1821,6 +1837,7 @@ static void group_actions(int gi)
 static void groups_screen(void)
 {
     scan_groups();
+    int pos = 0;
     for (;;) {
         const char *items[70];
         int m = 0;
@@ -1831,9 +1848,9 @@ static void groups_screen(void)
         items[m++] = "Import a meeting (at home, alone)...";
         items[m++] = "Check a new drive before a meeting...";
         items[m++] = "Back to the files";
-        int c = menu("Pairs and groups", ngroups ? "Your groups (Enter for more), and what you can do:"
+        int c = menu_at("Pairs and groups", ngroups ? "Your groups (Enter for more), and what you can do:"
                                                  : "No groups on your drives yet. Meet in person to make one:",
-                     items, m);
+                        items, m, &pos);
         if (c < 0 || c == m - 1)
             return;
         if (c < first_action)
