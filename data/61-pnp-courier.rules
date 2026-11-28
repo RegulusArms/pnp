@@ -1,0 +1,3 @@
+# pnp's courier sticks, self sticks and kill cards: partitions of pnp's own GPT type (made by pnp-courier-setup),
+# readable and writable by the pnp group, so pnp never needs root to use them. No other partition is affected.
+SUBSYSTEM=="block", ENV{ID_PART_ENTRY_TYPE}=="ec8e96c1-785d-4e11-b871-78e0064ee05e", GROUP="pnp", MODE="0660"

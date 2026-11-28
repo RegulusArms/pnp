@@ -170,6 +170,110 @@ Then use `unwrap(...)` in place of `key[24:]` (or of each `s[26:]`) in the examp
 [Decrypting without pnp](#decrypting-without-pnp). The pure-Python Balloon is slow at pnp's default 16 MiB
 (minutes).
 
+## Pairs and groups
+
+The files of [group.md](group.md). Numbers are little-endian. Member numbers in files are 0-based (shown 1-based).
+Every key file is 0600 in 0700 folders, and its modification and access times are reset to the group's fixed time
+after every write.
+
+**A group's folder** on a cylinder is `pnp-group-<group ID in hex>/`:
+
+```
+group                   the roster and settings (below), rewritten atomically
+kills/                  notices received (<ID>.pnp-kill) and what pnp has checked of each (<ID>.state)
+set-<key set ID>/       one folder per key set:
+  pool.A-B              the pad from member A to member B (1-based), for seals and messages
+  recv.A                what has arrived from A
+  sign                  my signing functions (groups)
+  verify.A, sused.A     A's verify functions as I hold them, and what each of A's slots signed (groups)
+```
+
+**group** (128-byte header, then the members, the bitmaps and the key sets):
+
+```
+ 0  8  "PNPGR001"                   36  2  time zone, minutes east of UTC (signed)
+ 8 16  group ID                     38  2  key sets
+24  4  generation                   40  4  dispute period in days (0: keep verify keys)
+28  1  members (2-255)              44  4  clock guard: the latest day seen (days since 1970-01-01, signed)
+29  1  me                           48  4  the day it was made
+30  1  ω (cheaters tolerated)       52 12  zero
+31  1  l_max (hand-ons)             64 64  group name, NUL-terminated (empty when anonymous)
+32  1  kill threshold
+33  1  grace days
+34  1  flags: 1 anonymous, 2 every message signed
+128     members × 32 bytes (names, NUL-terminated; empty when anonymous), the "left" and "expelled" bitmaps
+        (32 bytes each), then 64 bytes per key set:
+        0 16 ID; 16 kind (0 normal, 1 emergency); 17 state (0 active, 1 replaced, 2 killed, 3 closed);
+        18 reason (1 compromised, 2 ended); 20 4 first day; 24 4 last day (indefinite: INT32_MIN, INT32_MAX);
+        28 4 signature slots per member; 32 4 k; 36 4 items per pool direction; 40 8 pad bytes per direction;
+        48 4 suspect since (day); 52 suspect member; 56 4 suspect slot
+```
+
+**pool.A-B:**
+
+```
+ 0  8  "PNPPL001"     24 from, 25 to (0-based)     40 8 pad bytes      56 8 zero
+ 8 16  key set ID     32 4 items  36 4 next item   48 8 next offset
+ 64    items × 24 bytes: a 16-byte locator and an 8-byte offset mask; then the pad bytes
+```
+
+Each seal or message uses the next item: its locator, and pad from the next offset (a 32-byte MAC key, then as
+many bytes as the message). Both are reserved and fsynced before anything is read, and wiped as they're used.
+
+**recv.A:** `"PNPRV001"`, items (4), ranges (4), a bitmap of items received, then the pad ranges used (offset and
+length, 8 bytes each). An item or range already used is refused.
+
+**A seal** (40 bytes): locator (16), the offset XOR the item's mask (8), tag (16).
+Tag = MAC(k, s) over `"PNPSE001" | key set ID | from | to | item (4) | length (8) | the file`, with (k, s) the
+item's 32 key bytes, fixed up like a key's MAC key (top bits cleared).
+
+**A message:** locator (16), offset XOR mask (8), then the frame XOR the pad, then a 16-byte tag. The tag is the MAC
+over `"PNPGM001" | key set ID | from | to | item | length (8) | the frame`. The frame, only ever seen decrypted:
+
+```
+"PNPGF001" | group ID | generation (4) | from | recipients (1) | each recipient | message ID (16) | flags (1: signed)
+| kill notices: length (4) + bytes | file name: length (2) + bytes | content: length (8) + bytes
+| when signed: length (4) + the signature over everything before it
+```
+
+A received signed message is kept as `NAME.pnp-signed`: the decrypted frame, so its signature can be checked again
+and shown to others.
+
+**sign** (48-byte header): `"PNPSG001"`, key set ID, me, N (members − 1), k (4), slots (4), next slot (4), zero;
+then per slot N²k functions of 49 bytes. A function is K (16 bytes, below 2^127 − 1), A (two 16-byte rows) and c
+(1 byte, two bits). Function r of a slot belongs to the block of recipient r / (N·k).
+
+**verify.A** (40-byte header): `"PNPVF001"`, key set ID, signer, me, N, zero, k (4), slots (4), zero; then per slot N
+sets (one from each of the signer's recipients, in member order) of k entries: position (4) and function (49).
+
+**A signature** (`.pnp.sig`): `"PNPUS001"`, key set ID (16), signer (1), N (1), zero (2), slot (4), k (4), then the
+N²k 2-bit tags, four to a byte. Each tag is (parity(A0 & x) | parity(A1 & x) << 1) XOR c, with x = h_K(M) and M =
+`"PNPUS001" | key set ID | signer | slot (4) | length (8) | the file`. h_K is the MAC's polynomial with s = 0.
+
+**A kill notice** (`.pnp-kill`):
+
+```
+ 0  8 "PNPKL001"   24 16 notice ID   40 scope (1 key sets, 2 a member, 3 the group, 4 leaving)   41 member
+ 8 16 group ID                       42 reason   43 key sets (n)   44 4 suspect day   48 suspect member
+                                     52 4 suspect slot   56 n × 16 key set IDs
+then: signatures (1), each: signer, kind (1 group signature, 2 seal), length (4), the bytes; each covers bytes 0..55+16n
+```
+
+**Courier sticks, self sticks and kill cards** are raw partitions (GPT type `ec8e96c1-785d-4e11-b871-78e0064ee05e`)
+with no filesystem:
+
+```
+ 0 8 "PNPCR001"   9 owner     11 round   13 3 zero        32 4 generation   40 8 where the records end
+ 8 role (0 courier, 1 self, 2 kill card)  10 visiting   12 done   16 16 group ID   36 4 zero   48 8 capacity
+then records: type, from, to, signer (1 each), key set (2), zero (2), length (8), the data, and a 32-byte BLAKE2b
+of the record's header and data (it catches a bad stick or copy, not an attacker)
+```
+
+Record types: 1 roster (the group file), 2 a member's random contribution to a pair's two pools, 3 a signer's own
+functions, 4 a signer's block for one recipient, 5 a recipient's set for another, 6 a test signature, 7 a test
+seal, 8 a file of a kill card (name length (2), name, the bytes). A kill card holds the group file and the emergency
+signing file (groups) or emergency pool (pairs), with only its own half of the emergency slots.
+
 ## Version 001
 
 pnp 0.1.0-alpha.2 and older wrote version 001: the same 24-byte headers with magics `PNPCT001` and `PNPKY001`,

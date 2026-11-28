@@ -8,7 +8,7 @@
 [![C11, libc only](https://img.shields.io/badge/C11-libc%20only-A8B9CC?logo=c&logoColor=white)](#building-from-source)
 [![License: MIT](https://img.shields.io/github/license/RegulusArms/pnp)](LICENSE)
 
-**Version 0.1.0-alpha.7**: early alpha. See [Installing](#installing).
+**Version 0.1.0-alpha.9**: early alpha. See [Installing](#installing).
 
 A command-line file encryption tool for Debian, Ubuntu, Linux Mint and other Debian-based systems, built to stay
 secure even if P = NP.
@@ -197,6 +197,37 @@ The guarantee above is mathematics. These protect the program that carries it ou
 - **Built to be checked.** Reproducible builds, signed checksums, and an [entropy measurement](docs/entropy.md)
   of real hardware sources. Found a problem? [SECURITY.md](SECURITY.md) says how to report it privately.
 
+## Pairs and groups
+
+People who meet in person can afterwards **seal**, **sign** and **message** each other, still secure even if P = NP
+([docs/group.md](docs/group.md)).
+
+- **Seals, for two people:** `pnp --seal FILE --to bob`, then `pnp --check-seal FILE`. Nobody else can forge one.
+  A seal proves nothing to anyone outside the pair, so it's deniable.
+- **Signatures, for groups of 3 or more:** `pnp --sign FILE`, then `pnp --verify-sig FILE`.
+  - Every other member can check a signature, nobody can forge one, and the signer can't deny it.
+  - It relies on fewer than half the group cheating, instead of on hard problems.
+- **Messages:** `pnp --send FILE --to bob [--sign]`, then `pnp --receive FILE.pnp`.
+  - One-time-pad encrypted, with a header that names no one.
+  - The pad is wiped as it's used, so a cylinder stolen later can't read old messages.
+
+**The meeting** swaps key material on raw courier sticks, so a code cylinder never goes into anyone else's
+laptop:
+
+```
+sudo pnp-courier-setup /dev/sdX        # once per stick (needs gdisk)
+pnp --courier-check /dev/sdX1
+pnp --meet --self /dev/sdX1 --courier /dev/sdY1      # at the meeting, everyone on their own laptop
+pnp --import /dev/sdX1 /media/you/CYLINDER           # at home, alone
+```
+
+**Limits:**
+- **Supplies:** the key material comes in key sets with agreed validity windows. Seals, signatures and pad run out,
+  and then you meet again.
+- **Kill notices:** a stolen cylinder can be reported with a kill notice (two members kill, one only warns). Anyone
+  can leave a group on their own.
+- **Who can check:** only the people at the meeting can check a seal or signature. It isn't a public signature.
+
 ## Options
 
 | Option | Meaning |
@@ -216,6 +247,13 @@ The guarantee above is mathematics. These protect the program that carries it ou
 | `-q`, `--quiet` | Don't print which sources made the key, what was written, notes, or the progress line |
 | `-v`, `--verbose` | List every random source and its state |
 | `--sources` | List the hardware random sources and exit |
+| `--seal FILE --to M`, `--check-seal FILE [SEAL]` | Seal a file for another member (pairs), or check a seal: see [Pairs and groups](#pairs-and-groups) |
+| `--sign FILE`, `--verify-sig FILE [SIG]` | Sign a file for the group (3 or more), or check a signature. `--level -1` gives your vote in a dispute |
+| `--send FILE --to M[,M…]\|all [--sign]`, `--receive FILE.pnp` | Send an encrypted message to members, or receive one |
+| `--kill SCOPE`, `--kill-sign FILE`, `--leave` | Report keys compromised, confirm someone's report, or leave a group |
+| `--info [PATH]` | What's left in your groups and who can read what; or what a key, share, ciphertext or stick is |
+| `--meet`, `--import SELF CYLINDER`, `--move KEYSET --to CYLINDER` | The meeting wizard, the import at home, moving a key set (to the vault) |
+| `--groups FOLDER`, `--group NAME` | Where pnp looks for your groups (default: mounted drives), and which one to use |
 
 On a terminal, pnp shows a progress line for each file (and for `--protect`'s passphrase hashing): how far along
 it is, how fast, and how long is left. A slow hardware random source can make a large file take hours.
@@ -381,6 +419,8 @@ MIT. See [LICENSE](LICENSE).
 | Document | What's in it |
 |---|---|
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
+| [docs/group.md](docs/group.md) | Pairs and groups: seals, signatures and messages for people who meet in person, the meeting, kill notices, limits |
+| [docs/research.md](docs/research.md) | Every paper and standard pnp relies on, and exactly what was taken from each |
 | [docs/code-cylinder.md](docs/code-cylinder.md) | Setting up an encrypted key drive (an external hard disk) to carry with you, and why pnp relies on physical security |
 | [docs/format.md](docs/format.md) | The file formats (ciphertext, key, key shares, keys locked with a passphrase), and how to decrypt without pnp |
 | [docs/threat-model.md](docs/threat-model.md) | Who pnp defends against, who it can't, and every assumption the guarantee rests on |

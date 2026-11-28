@@ -2,6 +2,23 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.9
+
+- **Pairs and groups (new).** People who meet in person can now authenticate files and send each other
+  encrypted messages afterwards, still secure even if P = NP ([docs/group.md](docs/group.md)):
+  - **Seals, for two people** (`pnp --seal FILE --to NAME`, `pnp --check-seal FILE`): nobody else can forge one.
+    A seal proves nothing to anyone outside the pair, so it's deniable, and pnp says so.
+  - **Signatures, for groups of 3 or more** (`pnp --sign FILE`, `pnp --verify-sig FILE`): every other member can
+    check them, nobody can forge them, the signer can't deny them, and they can be passed on to another member.
+    Built on an unconditionally secure scheme from universal hashing (Amiri, Abidin, Wallden and Andersson, ACNS
+    2018). It relies on an honest majority and a fixed group instead of hard problems.
+  - **Messages** (`pnp --send FILE --to NAME`, `pnp --receive FILE.pnp`): one-time-pad encrypted, optionally
+    signed. Their headers name no group, pair or period, and the pad is wiped as it's used.
+  - **Key sets with validity windows** (a week to a year, or no limit), **kill notices** for stolen keys (two
+    members to kill, one to warn; either person in a pair), **leaving a group**, and **`pnp --info`**.
+  - **Meetings** use courier sticks in a raw format (no filesystem), so a code cylinder never goes into anyone
+    else's laptop.
+
 ## 0.1.0-alpha.7
 
 - **A new page on the website: [if P = NP](https://pnp.regulusarms.com/p-np.html).** Pick how good a P = NP

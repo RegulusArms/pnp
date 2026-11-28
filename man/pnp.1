@@ -1,4 +1,4 @@
-.TH PNP 1 "2026-11-26" "pnp @VERSION@" "User Commands"
+.TH PNP 1 "2026-11-27" "pnp @VERSION@" "User Commands"
 .SH NAME
 pnp \- one-time pad file encryption that stays secure even if P = NP
 .SH SYNOPSIS
@@ -44,6 +44,46 @@ pnp \- one-time pad file encryption that stays secure even if P = NP
 .B pnp \-\-sources
 .br
 .BR pnp " " \-\-gen\-passphrase [=\fIWORDS\fR]
+.br
+.B pnp \-\-seal
+.I FILE
+.B \-\-to
+.IR MEMBER " | "
+.B pnp \-\-check\-seal
+.I FILE
+.br
+.B pnp \-\-sign
+.IR FILE " | "
+.B pnp \-\-verify\-sig
+.I FILE
+.RI [ SIG ]
+.br
+.B pnp \-\-send
+.I FILE
+.B \-\-to
+.IR MEMBER [, MEMBER ...]
+.RB [ \-\-sign ]
+| 
+.B pnp \-\-receive
+.I FILE.pnp
+.br
+.B pnp \-\-kill
+.IR SCOPE " | "
+.B pnp \-\-kill\-sign
+.IR FILE " | "
+.B pnp \-\-leave
+.br
+.B pnp \-\-info
+.RI [ PATH ]
+.br
+.B pnp \-\-meet \-\-self
+.I DEVICE
+.B \-\-courier
+.IR DEVICE " | "
+.B pnp \-\-import
+.I SELF CYLINDER
+.RB [ \-\-kill\-card
+.IR DEVICE ]
 .SH DESCRIPTION
 .B pnp
 encrypts any file with a one-time pad: a key of random bytes exactly as long as the file, combined with it by XOR.
@@ -216,6 +256,91 @@ Print the version.
 .TP
 .BR \-h ", " \-\-help
 Print a short help.
+.SH PAIRS AND GROUPS
+People who meet in person can afterwards seal, sign and send each other files, still secure even if P = NP
+(see docs/group.md).
+At a meeting each person runs
+.B pnp \-\-meet
+on their own laptop, with two sticks prepared by
+.BR pnp\-courier\-setup (8):
+a self stick and a courier.
+A courier only ever passes between its owner and the member it is addressed to.
+At home,
+.B pnp \-\-import
+makes the group's folder on the code cylinder.
+.TP
+.BI \-\-seal " FILE " \-\-to " MEMBER"
+Writes
+.IR FILE .pnp.seal:
+only the two of you can make it, and it proves nothing to anyone else (deniable).
+.TP
+.BI \-\-check\-seal " FILE " [ SEAL ]
+Checks a seal. A seal is checked once; a replay is refused.
+.TP
+.BI \-\-sign " FILE"
+Groups of 3 or more: writes
+.IR FILE .pnp.sig,
+which every other member can check and the signer can't deny.
+.TP
+.BI \-\-verify\-sig " FILE " [ SIG ]
+Checks a signature, or a kept signed message
+.RI ( NAME .pnp\-signed).
+A signature that isn't exact is reported: an honest signer's always is.
+.B \-\-level \-1
+gives your vote in a dispute.
+.TP
+.BI \-\-send " FILE " \-\-to " MEMBERS"
+Encrypts
+.I FILE
+to each member (a name, a number, a comma-separated list, or
+.BR all ),
+signed with
+.BR \-\-sign .
+.TP
+.BI \-\-receive " FILE.pnp"
+Decrypts a message; a signed one is also kept as
+.IR NAME .pnp\-signed.
+.TP
+.BI \-\-kill " SCOPE"
+.IR SCOPE " is " group ", " member:M " or " sets:ID,...
+Reports keys compromised
+.RB ( \-\-reason " compromised|ended, " \-\-since " DATE|MEMBER:SLOT, " \-\-kill\-card " DEVICE)."
+Below the group's kill threshold it only warns (sending then needs
+.BR \-\-despite\-warning );
+at the threshold it kills for good.
+.TP
+.BI \-\-kill\-sign " FILE"
+Adds your signature to someone's kill notice.
+.TP
+.B \-\-leave
+Ends your own keys in a group (in a pair: the pair).
+.B \-\-wipe\-verify
+also wipes your verify keys.
+.TP
+.BI \-\-info " " [ PATH ]
+What is left in your groups and who can read what; with
+.IR PATH ,
+what a key, share, ciphertext, group folder or stick is (headers only).
+.TP
+.BI \-\-meet " \-\-self DEVICE \-\-courier DEVICE"
+The meeting wizard.
+.TP
+.BI \-\-import " SELF CYLINDER " [ "\-\-kill\-card DEVICE" ]
+At home: makes the group folder, and optionally a kill card (half the emergency keys).
+.TP
+.BI \-\-move " KEYSET " \-\-to " CYLINDER"
+Moves a key set to another cylinder (the vault).
+.TP
+.BI \-\-courier\-check " DEVICE"
+Writes and reads back a whole stick before a meeting.
+.TP
+.BI \-\-groups " FOLDER" ", " \-\-group " NAME"
+Where to look for groups (default: mounted drives and
+.BR $PNP_GROUPS ),
+and which one to use.
+.TP
+.BR \-\-clock\-ok ", " \-\-lookahead " N"
+Go on although the clock is earlier than a day already seen; look further ahead for out-of-order items.
 .SH FILES
 .TP
 .I /dev/hwrng

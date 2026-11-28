@@ -17,4 +17,9 @@ int pnp_sandbox_early(void);
  * (where outputs are saved), and only the system calls the rest of the work makes. Irreversible. */
 void pnp_sandbox_work(char *const *dirs, int ndirs, struct pnp_sandbox_state *st);
 
+/* Pairs and groups (gcli.c): file access only beneath the folders given (the group's, the input's, the output's,
+ * the current one), on top of the early filter. They open their files as they go, so the work filter (which
+ * allows read-only opens) doesn't fit them. The Landlock ABI version, or -1. Irreversible. */
+int pnp_sandbox_dirs(char *const *dirs, int ndirs);
+
 #endif

@@ -18,6 +18,7 @@
  * of words from the EFF large word list, chosen with the same random sources as the pad. */
 #define _GNU_SOURCE
 #include "fileio.h"
+#include "gcli.h"
 #include "kdf.h"
 #include "mac.h"
 #include "pnp.h"
@@ -255,6 +256,9 @@ static void usage(FILE *f)
             "       pnp --sources                list the hardware random sources and whether they're usable\n"
             "       pnp --gen-passphrase[=WORDS] print a random passphrase (7 words unless WORDS, 5-20;\n"
             "                                    each is 12.9 bits: 7 about 90, 10 about 128, 20 about 256)\n"
+            "       pnp --seal | --check-seal | --sign | --verify-sig | --send | --receive | --kill |\n"
+            "           --kill-sign | --leave | --info | --meet | --import | --move | --courier-check ...\n"
+            "                                    pairs and groups: see man pnp (PAIRS AND GROUPS)\n"
             "\n"
             "  -d, --decrypt   decrypt instead of encrypting\n"
             "  -k, --key KEY   the key file to decrypt with (default: FILE.pnp.key, or FILE.pnp.key.1, .2...);\n"
@@ -1456,6 +1460,13 @@ int main(int argc, char **argv)
     int dec = 0, verify = 0, force = 0, verbose = 0, sources = 0, shares = 0, nkeys = 0, nkey_outs = 0, gen = 0, kdf_set = 0, c;
     struct protect_opts po = {0, PNP_PROTECT_MIB, NULL};
     long v;
+    /* pairs and groups (seals, signatures, messages, kills, meetings): their own command line, gcli.c */
+    if (argc > 1 && pnp_is_group_command(argv[1])) {
+        setup_process();
+        int ret = pnp_group_cli(argc, argv);
+        exit_for_signal();
+        return ret;
+    }
     char *keys[MAX_SHARES], *key_outs[MAX_SHARES];
     const char *out_opt = NULL;
 

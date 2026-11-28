@@ -4,7 +4,9 @@
 # The tests run build/pnp-test, the same program with test hooks: PNP_TEST_HWRNG points /dev/hwrng at a file or FIFO
 # and PNP_TEST_NO_RDSEED turns RDSEED off (src/rng.c), so they give the same results on every machine, with or
 # without hardware random sources; PNP_TEST_VM says whether to act as a virtual machine (src/rng.c);
-# PNP_TEST_MEMINFO replaces /proc/meminfo (src/protect.c); PNP_TEST_MEDIA replaces /media/$USER and PNP_TEST_FDS lists
+# PNP_TEST_MEMINFO replaces /proc/meminfo (src/protect.c); PNP_TEST_NOW fakes today's date, --test-setup runs a whole
+# meeting in one process, PNP_TEST_COURIER_LIE makes a courier lie, PNP_TEST_CHEAT / PNP_TEST_SPLITS / PNP_TEST_KEEP_SLOT
+# make a signer cheat (src/group.c, gmeet.c, courier.c, uss.c); PNP_TEST_MEDIA replaces /media/$USER and PNP_TEST_FDS lists
 # the files still open on quitting (src/tui.c); PNP_TEST_PROGRESS draws the progress line at once (src/progress.c). They don't touch the real /dev/hwrng or drives. PNP_SANITIZE=1 (make
 # sanitize) skips the one check AddressSanitizer makes meaningless.
 set -uo pipefail
@@ -31,6 +33,8 @@ fresh() { rm -rf "$T/w" && mkdir "$T/w"; }
 "$B/test_mac" || fails=$((fails + $?))
 # --- --protect's hashes and cipher (unit tests of src/kdf.c, blake2b.c, chacha20.c, protect.c)
 "$B/test_kdf" || fails=$((fails + $?))
+# --- the group signature's hash family and parameters (unit tests of src/uss.c)
+"$B/test_uss" || fails=$((fails + $?))
 
 # --- encrypt and decrypt
 for size in 0 1 65535 65536 65537 $((3 << 20 | 7)); do
@@ -701,9 +705,14 @@ crash_walk "decrypting with -f" \
     '"$PNP" -q -d -f -k "$O/f.pnp.key" "$T/w/f.pnp"' \
     '{ cmp -s "$T/w/f" "$T/old" || cmp -s "$T/w/f" "$T/new"; } && "$PNP" -q --verify -k "$O/f.pnp.key" "$T/w/f.pnp"'
 
+# --- pairs and groups: seals, signatures, messages, kills, windows, couriers (tests/group.sh)
+R="$PWD"
+cd "$T" && source "$R/tests/group.sh"
+cd "$R"
+
 # --- the fuzz harnesses (tests/fuzz/), run once on their seeds: they build and pass here (make fuzz-run fuzzes)
 tests/fuzz/seeds.sh "$PNP" "$T/seeds" >/dev/null
-for f in header keys passfile verify; do
+for f in header keys passfile verify group kill courier; do
     check '"$B/fuzz/replay_$f" "$T/seeds/$f"/* >/dev/null' "fuzz harness $f passes on its seeds"
 done
 
@@ -715,6 +724,14 @@ for opt in -O1 -O2 -O3 -Os; do
     check 'awk "/^[0-9a-f]+ <(block|canon|add|mul)>:/{f=1;n++;next} /^[0-9a-f]+ </{f=0} f && /\tj[a-z]+ /{j++}
                END{exit !(n >= 1 && j == 0)}" "$T/mac.s"' \
         "constant time: the MAC's arithmetic has no conditional jumps ($opt)"
+done
+
+# the group signature's parities run on the secret A and h_K(M): no conditional jumps either
+for opt in -O1 -O2 -O3 -Os; do
+    ${CC:-cc} -std=c11 $opt -Isrc -c src/uss.c -o "$T/uss.o" && objdump -d --no-show-raw-insn "$T/uss.o" >"$T/uss.s"
+    check 'awk "/^[0-9a-f]+ <(parity64)>:/{f=1;n++;next} /^[0-9a-f]+ </{f=0} f && /\tj[a-z]+ /{j++}
+               END{exit !(n >= 1 && j == 0)}" "$T/uss.s"' \
+        "constant time: the signature hash's parities have no conditional jumps ($opt)"
 done
 
 # --- hardening (Makefile): what the compiler offers is in the binary

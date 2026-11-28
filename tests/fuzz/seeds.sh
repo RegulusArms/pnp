@@ -3,11 +3,12 @@
 # cases, so fuzzing starts from inputs that get deep into each parser.
 #   tests/fuzz/seeds.sh build/pnp-test OUT     makes OUT/header, OUT/keys, OUT/passfile, OUT/verify
 set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
 PNP="$(realpath "$1")"
 OUT="$(realpath -m "$2")"
 W="$(mktemp -d)"
 trap 'rm -rf "$W"' EXIT
-mkdir -p "$OUT"/{header,keys,passfile,verify}
+mkdir -p "$OUT"/{header,keys,passfile,verify,group,kill,courier}
 head -c $((1 << 20)) /dev/urandom >"$W/rng"
 export PNP_TEST_HWRNG="$W/rng" PNP_TEST_NO_RDSEED=1 PNP_TEST_VM=
 printf 'pw\n' >"$W/pass"
@@ -54,3 +55,25 @@ printf 'no newline' >"$OUT/passfile/no-newline"
 head -c 1024 /dev/zero | tr '\0' a >"$OUT/passfile/too-long"
 printf 'a\0b\nsecond line\n' >"$OUT/passfile/nul"
 echo "seeds in $OUT: $(find "$OUT" -type f | wc -l) files"
+
+# group, kill, courier: from a real pair and group meeting (the test build's --test-setup)
+head -c $((48 << 20)) /dev/urandom >"$W/rng-big"
+export PNP_TEST_HWRNG="$W/rng-big"
+PNP_TEST_SETUP_OPTS=slots=1,nloc=2,bytes=64,emergency=1 "$PNP" --test-setup pair "$W/p" 2>/dev/null
+PNP_TEST_SETUP_OPTS=slots=1,nloc=2,bytes=64,emergency=2 "$PNP" --test-setup group:3 "$W/g" 2>/dev/null
+cp "$W"/p/m1/pnp-group-*/group "$OUT/group/pair"
+cp "$W"/g/m2/pnp-group-*/group "$OUT/group/group3"
+printf 'x' >"$W/s" && "$PNP" --sign "$W/s" --groups "$W/g/m1" -q -o "$OUT/group/sig" 2>/dev/null || true
+(cd "$W" && "$PNP" --kill group --groups "$W/g/m1" -q -o "$OUT/kill/group" 2>/dev/null) || true
+(cd "$W" && "$PNP" --leave --groups "$W/p/m1" -q -o "$OUT/kill/pair-end" 2>/dev/null) || true
+printf 'PNPKL001' >"$OUT/kill/short"
+# couriers: a small store with a few records (the self stick of a pair, cut to its records' end)
+end=$(od -An -t u8 -j 40 -N 8 "$W/p/self.1" | tr -d ' ')
+if (( end < 65536 )); then head -c "$end" "$W/p/self.1" >"$OUT/courier/self"; fi
+head -c 64 "$W/p/courier.1" >"$OUT/courier/empty"
+
+# inputs the fuzzers once crashed on, kept so they're replayed on every run (tests/fuzz/regress/<harness>-<what>)
+for f in "$HERE"/regress/*; do
+    [[ -f $f ]] && cp "$f" "$OUT/$(basename "$f" | cut -d- -f1)/regress-$(basename "$f")"
+done
+
