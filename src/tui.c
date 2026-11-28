@@ -1639,13 +1639,13 @@ static char *pick_stick(const char *title, const char *intro, const char *exclud
         }
         struct cstore c;
         char err[256];
-        static const char *const role[] = {"courier", "self stick", "kill card"};
+        static const char *const role[] = {"courier", "self drive", "kill card"};
         if (cs_open(&c, paths[i], err, sizeof err) == 0) {
             snprintf(labels[m], sizeof labels[m], "%s  (a %s, member %d, %llu MiB)", paths[i], role[c.role],
                      c.owner + 1, (unsigned long long)(c.capacity >> 20));
             cs_close(&c);
         } else {
-            snprintf(labels[m], sizeof labels[m], "%s  (blank pnp stick)", paths[i]);
+            snprintf(labels[m], sizeof labels[m], "%s  (blank pnp drive)", paths[i]);
         }
         pnp_clean(labels[m]);
         items[m] = labels[m], keep[m++] = paths[i];
@@ -1653,7 +1653,7 @@ static char *pick_stick(const char *title, const char *intro, const char *exclud
     if (allow_none)
         items[m] = "none", keep[m++] = NULL;
     if (m == 0) {
-        set_status(c_yellow(), "No pnp sticks plugged in: prepare them with sudo pnp-courier-setup /dev/sdX");
+        set_status(c_yellow(), "No pnp drives plugged in: prepare them with sudo pnp-courier-setup /dev/sdX");
         return NULL;
     }
     int c = menu(title, intro, items, m);
@@ -1735,7 +1735,7 @@ static char *pick_cylinder(void)
 
 static void meeting(const char *from)
 {
-    char *self = pick_stick("Your self stick", "It stays with you: only your own laptop touches it.", NULL, 0);
+    char *self = pick_stick("Your self drive", "It stays with you: only your own laptop touches it.", NULL, 0);
     if (!self)
         return;
     char *cour = pick_stick("Your courier", "It goes to one member at a time and comes straight back.", self, 0);
@@ -1759,12 +1759,12 @@ static void meeting(const char *from)
 
 static void import_meeting(void)
 {
-    char *self = pick_stick("Import: which is your self stick?", "At home, alone, on a machine you fully control.",
+    char *self = pick_stick("Import: which is your self drive?", "At home, alone, on a machine you fully control.",
                             NULL, 0);
     if (!self)
         return;
     char *dest_dir = pick_cylinder();
-    char *card = dest_dir ? pick_stick("A kill card?", "A third stick for half your emergency keys, kept apart "
+    char *card = dest_dir ? pick_stick("A kill card?", "A third drive for half your emergency keys, kept apart "
                                                        "from the cylinder (or none).", self, 1)
                           : NULL;
     if (dest_dir) {
@@ -1829,7 +1829,7 @@ static void groups_screen(void)
         int first_action = m;
         items[m++] = "Start or join a meeting...";
         items[m++] = "Import a meeting (at home, alone)...";
-        items[m++] = "Check a new stick before a meeting...";
+        items[m++] = "Check a new drive before a meeting...";
         items[m++] = "Back to the files";
         int c = menu("Pairs and groups", ngroups ? "Your groups (Enter for more), and what you can do:"
                                                  : "No groups on your drives yet. Meet in person to make one:",
@@ -1843,11 +1843,11 @@ static void groups_screen(void)
         else if (c == first_action + 1)
             import_meeting();
         else if (c == first_action + 2) {
-            char *st = pick_stick("Check which stick?", "It's written all over and read back: it must be blank or "
+            char *st = pick_stick("Check which drive?", "It's written all over and read back: it must be blank or "
                                                          "unneeded.", NULL, 0);
             if (st) {
                 char *argv[] = {"pnp", "--courier-check", st, NULL};
-                run_group("checking the stick", 3, argv);
+                run_group("checking the drive", 3, argv);
                 free(st);
             }
         }

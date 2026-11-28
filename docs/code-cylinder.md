@@ -295,7 +295,7 @@ follows different rules from ordinary keys:
 - **Never back it up, and never restore it.** A group's keys are used up as you go: every seal, signature and
   message burns a slot or a run of pad. A restored copy would bring used ones back, and using one twice breaks the
   guarantee. If the cylinder dies, report it with a kill notice and meet again.
-- **The cylinder never goes to a meeting.** Meetings use courier sticks, and the import happens at home, alone.
+- **The cylinder never goes to a meeting.** Meetings use courier drives, and the import happens at home, alone.
 - **Several cylinders by trust level:**
   - a daily one with the current period;
   - a vault with future periods (`pnp --move KEYSET --to VAULT`) and your kill card;

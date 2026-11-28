@@ -1,11 +1,11 @@
-.TH PNP-COURIER-SETUP 8 "2026-11-27" "pnp @VERSION@" "System Administration"
+.TH PNP-COURIER-SETUP 8 "2026-11-28" "pnp @VERSION@" "System Administration"
 .SH NAME
-pnp-courier-setup \- prepare a USB stick as a pnp courier stick, self stick or kill card
+pnp-courier-setup \- prepare an external drive as a pnp courier, self drive or kill card
 .SH SYNOPSIS
 .B sudo pnp-courier-setup
 .I DEVICE
 .SH DESCRIPTION
-Erases the whole USB stick
+Erases the whole external drive
 .I DEVICE
 (for example /dev/sdb, not a partition) and makes one GPT partition of pnp's own type, with no filesystem.
 Nothing mounts it, and no kernel parses a filesystem someone else's laptop wrote; pnp reads and writes it
@@ -13,11 +13,16 @@ directly. The udev rule installed with pnp lets members of the
 .B pnp
 group use such partitions without root.
 .PP
+External spinning hard disks are preferred for couriers: they overwrite in place, so pnp's overwrite between
+visits removes the previous member's data (apart from sectors the disk has remapped). Flash drives (USB sticks,
+SSDs) work too, but wear levelling keeps old copies the overwrite can't reach; the script says when a drive is
+flash.
+.PP
 It asks you to type ERASE first, refuses anything that isn't a removable or USB drive, and refuses a drive with
 anything mounted. Afterwards, as yourself, run
 .B pnp \-\-courier\-check
-on the new partition: it writes the whole stick and reads it back, which catches sticks that hold less than they
-claim.
+on the new partition: it writes the whole drive and reads it back, which catches drives that hold less than they
+claim (this takes hours on a large disk).
 .SH SEE ALSO
 .BR pnp (1),
 .BR sgdisk (8)

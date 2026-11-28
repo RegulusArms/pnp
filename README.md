@@ -19,7 +19,7 @@ That means a different security infrastructure, with its costs out in the open:
 
 | Today | In pnp |
 |---|---|
-| Public keys exchanged over a network | **Physical meetings**: key material swapped by hand, on courier sticks |
+| Public keys exchanged over a network | **Physical meetings**: key material swapped by hand, on courier drives |
 | Private keys in a key store | **Code cylinders**: drives you carry and keep in your custody |
 | Reusable digital signatures | **Finite signing material**: every signature uses up a slot; when they run out, you meet again |
 | Global public-key infrastructure | **Trusted groups**: only the people at the meeting can check each other's signatures |
@@ -185,9 +185,9 @@ and its key to /media/you/KEYS/report.pdf.pnp.key
   - **`s` on a file** seals it, signs it, or sends it to a member or everyone.
   - **Enter on a `.pnp.seal`, `.pnp.sig` or group message** checks it or receives it. Enter on a kill notice offers
     to add your signature.
-  - **`p`** lists your groups and walks you through a meeting: choose your self stick and courier from the pnp
-    sticks plugged in, and the wizard takes you step by step. It also imports a meeting at home, checks a new
-    stick, and per group shows info, reports a compromise, leaves, or starts a re-meeting.
+  - **`p`** lists your groups and walks you through a meeting: choose your self drive and courier from the pnp
+    drives plugged in, and the wizard takes you step by step. It also imports a meeting at home, checks a new
+    drive, and per group shows info, reports a compromise, leaves, or starts a re-meeting.
 
 It runs the same encryption, decryption and group commands as the command line, with the same checks.
 
@@ -243,11 +243,11 @@ People who meet in person can afterwards **seal**, **sign** and **message** each
   - One-time-pad encrypted, with a header that names no one.
   - The pad is wiped as it's used, so a cylinder stolen later can't read old messages.
 
-**The meeting** swaps key material on raw courier sticks, so a code cylinder never goes into anyone else's
-laptop:
+**The meeting** swaps key material on raw courier drives (external spinning hard disks preferred: they overwrite in
+place, unlike flash), so a code cylinder never goes into anyone else's laptop:
 
 ```
-sudo pnp-courier-setup /dev/sdX        # once per stick (needs gdisk)
+sudo pnp-courier-setup /dev/sdX        # once per drive (needs gdisk)
 pnp --courier-check /dev/sdX1
 pnp --meet --self /dev/sdX1 --courier /dev/sdY1      # at the meeting, everyone on their own laptop
 pnp --import /dev/sdX1 /media/you/CYLINDER           # at home, alone
@@ -283,7 +283,7 @@ pnp --import /dev/sdX1 /media/you/CYLINDER           # at home, alone
 | `--sign FILE`, `--verify-sig FILE [SIG]` | Sign a file for the group (3 or more), or check a signature. `--level -1` gives your vote in a dispute |
 | `--send FILE --to M[,M…]\|all [--sign]`, `--receive FILE.pnp` | Send an encrypted message to members, or receive one |
 | `--kill SCOPE`, `--kill-sign FILE`, `--leave` | Report keys compromised, confirm someone's report, or leave a group |
-| `--info [PATH]` | What's left in your groups and who can read what; or what a key, share, ciphertext or stick is |
+| `--info [PATH]` | What's left in your groups and who can read what; or what a key, share, ciphertext or pnp drive is |
 | `--meet`, `--import SELF CYLINDER`, `--move KEYSET --to CYLINDER` | The meeting wizard, the import at home, moving a key set (to the vault) |
 | `--groups FOLDER`, `--group NAME` | Where pnp looks for your groups (default: mounted drives), and which one to use |
 

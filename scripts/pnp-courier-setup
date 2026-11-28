@@ -1,24 +1,29 @@
 #!/bin/sh
-# pnp-courier-setup DEVICE: turns a whole USB stick into a pnp courier stick, self stick or kill card.
-# Run with sudo, once per stick. It ERASES the stick: one GPT partition of pnp's own type, no filesystem (nothing
+# pnp-courier-setup DEVICE: turns a whole external drive into a pnp courier, self drive or kill card. External
+# spinning hard disks are preferred for couriers (they overwrite in place; flash keeps old copies).
+# Run with sudo, once per drive. It ERASES the drive: one GPT partition of pnp's own type, no filesystem (nothing
 # mounts it, and no kernel parses a filesystem someone else's laptop shaped). Afterwards, as yourself (no sudo):
-#   pnp --courier-check DEVICE-PARTITION     test that the stick really holds what it claims
+#   pnp --courier-check DEVICE-PARTITION     test that the drive really holds what it claims
 # Needs sgdisk (the gdisk package) and udev's pnp rule (installed with pnp).
 set -eu
 TYPE=ec8e96c1-785d-4e11-b871-78e0064ee05e
 die() { echo "pnp-courier-setup: $*" >&2; exit 1; }
-[ "$#" -eq 1 ] || die "usage: sudo pnp-courier-setup /dev/sdX   (the whole stick, not a partition)"
+[ "$#" -eq 1 ] || die "usage: sudo pnp-courier-setup /dev/sdX   (the whole drive, not a partition)"
 dev=$1
-[ "$(id -u)" -eq 0 ] || die "run it with sudo (it rewrites the stick's partition table)"
+[ "$(id -u)" -eq 0 ] || die "run it with sudo (it rewrites the drive's partition table)"
 command -v sgdisk >/dev/null || die "needs sgdisk: sudo apt install gdisk"
 [ -b "$dev" ] || die "$dev isn't a block device"
-case "$(lsblk -dno TYPE "$dev")" in disk) ;; *) die "$dev is a partition: give the whole stick (/dev/sdX)" ;; esac
+case "$(lsblk -dno TYPE "$dev")" in disk) ;; *) die "$dev is a partition: give the whole drive (/dev/sdX)" ;; esac
 [ "$(lsblk -dno RM "$dev")" = 1 ] || [ "$(lsblk -dno TRAN "$dev")" = usb ] ||
-    die "$dev isn't a removable or USB drive: refusing (pnp-courier-setup is for USB sticks only)"
+    die "$dev isn't a removable or USB drive: refusing (pnp-courier-setup is for external drives only)"
 if lsblk -no MOUNTPOINT "$dev" | grep -q .; then
     die "something on $dev is mounted: unmount it first"
 fi
-lsblk -o NAME,SIZE,MODEL,TRAN "$dev"
+lsblk -o NAME,SIZE,MODEL,TRAN,ROTA "$dev"
+if [ "$(lsblk -dno ROTA "$dev" | tr -d ' ')" = 0 ]; then
+    echo "Note: this is flash (a USB stick or SSD). It works, but wear levelling keeps old copies that pnp's"
+    echo "overwrite between visits can't reach. For a courier, an external spinning hard disk is preferred."
+fi
 printf 'Everything on %s will be erased. Type ERASE to go on: ' "$dev"
 read -r answer
 [ "$answer" = ERASE ] || die "nothing was changed"
@@ -27,4 +32,4 @@ sgdisk --new=1:0:0 --typecode=1:"$TYPE" --change-name=1:pnp-courier "$dev" >/dev
 partprobe "$dev" 2>/dev/null || true
 udevadm settle 2>/dev/null || true
 part=$(lsblk -lnpo NAME "$dev" | sed -n 2p)
-echo "Done: $part is a pnp stick. Now, as yourself: pnp --courier-check $part"
+echo "Done: $part is a pnp drive. Now, as yourself: pnp --courier-check $part"

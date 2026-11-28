@@ -36,10 +36,12 @@ parameters are chosen for ("How it works"). The bounds hold only if:
    them. Never back up or restore a group folder's key files.
 3. **For signatures, an honest majority:** fewer than half the group cheat. The exact number tolerated (ω) is set
    at the meeting and shown by `pnp --info`.
-4. **Custody at the meeting:** a courier stick only ever passes between its owner and the member it's addressed
-   to. With one courier per person, reused between members, this also assumes that nobody reads a stick's flash
-   chip below its USB interface (vendor debug commands, or removing the chip) during the few minutes they hold it.
-   pnp overwrites each courier and reads it back between visits.
+4. **Custody at the meeting:** a courier drive only ever passes between its owner and the member it's addressed
+   to. With one courier per person, reused between members, pnp overwrites each courier and reads it back between
+   visits, and this also assumes nobody recovers what that overwrite didn't reach while they hold the drive:
+   - **on a spinning disk** (preferred), only sectors the disk itself has remapped, which normal reads don't reach;
+   - **on flash** (USB sticks, SSDs), old copies that wear levelling keeps in the chip, reachable with vendor debug
+     commands or by removing the chip.
 
 Seals and messages need only the first two.
 
@@ -48,24 +50,34 @@ Seals and messages need only the first two.
 Each person brings:
 
 - **Their own laptop:** one under their full control, with a hardware random source (`pnp --sources`).
-- **Two USB sticks,** a courier and a self stick, prepared once:
+- **Two external drives,** a courier and a self drive, prepared once:
 
   ```
-  sudo pnp-courier-setup /dev/sdX      # erases the stick: one partition of pnp's own type, no filesystem
-  pnp --courier-check /dev/sdX1        # writes the whole stick and reads it back: catches fake-capacity sticks
+  sudo pnp-courier-setup /dev/sdX      # erases the drive: one partition of pnp's own type, no filesystem
+  pnp --courier-check /dev/sdX1        # writes the whole drive and reads it back: catches fake-capacity drives
   ```
 
-  The sticks have no filesystem, so nothing mounts them, and no kernel ever parses a filesystem someone else's
-  laptop wrote. The `pnp` group can use them without root, through a udev rule installed with pnp (join it with
-  `sudo usermod -aG pnp $USER`).
-- **Optionally, a third stick for a kill card** (see "Kill notices").
+  - **Prefer external spinning hard disks** (and among them CMR rather than SMR, "shingled", disks), especially for
+    the courier. A spinning disk overwrites data in place, so pnp's overwrite between visits really removes the
+    previous member's data, apart from sectors the disk has remapped after errors. Flash (USB sticks, SD cards,
+    SSDs) uses wear levelling, which keeps old copies in the chip where an overwrite can't reach them. That
+    widens the custody assumption above. An SMR disk buffers writes in a cache area and moves them later, which
+    has a similar, smaller effect.
+  - **Flash still works.** `pnp-courier-setup` says when a drive is flash, and the assumption is then the wider one.
+  - **Size:** a few GB is plenty for most meetings. `--courier-check` writes the whole drive, which takes hours on a
+    large disk, so a small or old disk is the practical choice. It's needed once per drive, not per meeting.
+  - **No filesystem:** the drives have none, so nothing mounts them, and no kernel ever parses a filesystem someone
+    else's laptop wrote. The `pnp` group can use them without root, through a udev rule installed with pnp (join it
+    with `sudo usermod -aG pnp $USER`).
+- **Optionally, a third drive for a kill card** (see "Kill notices"). A USB stick is fine for that: it's never
+  reused between people.
 
 **Nobody brings a code cylinder.** It stays at home and only ever goes into machines its owner fully controls.
 
 ## The meeting
 
 Everyone runs the wizard on their own laptop: from the interactive mode (`pnp` alone, then `p`, "Start or join a
-meeting", and choose your two sticks), or directly:
+meeting", and choose your two drives), or directly:
 
 ```
 pnp --meet --self /dev/sdX1 --courier /dev/sdY1
@@ -85,13 +97,13 @@ pnp --meet --self /dev/sdX1 --courier /dev/sdY1
    aloud: they must all match.
 2. **Two rounds of courier swaps.** The wizard says, step by step, whose courier to hand on and whose you'll get.
    Your laptop writes onto the courier it receives, you hand it straight back, and when your own courier returns
-   your laptop moves its contents onto your self stick, overwrites it and reads it back. Each step is checked: a
+   your laptop moves its contents onto your self drive, overwrites it and reads it back. Each step is checked: a
    courier addressed to someone else is refused.
 3. **The check.** Each laptop verifies a test signature and a test seal from every other member, in memory, and
    shows a ✓ for each.
 
 Nothing secret is ever shown on screen, so people may watch each other's screens. What matters is who handles which
-stick.
+drive.
 
 ## At home, alone
 
@@ -100,7 +112,7 @@ pnp --import /dev/sdX1 /media/you/CYLINDER [--kill-card /dev/sdZ1]
 ```
 
 This makes the group's folder on your cylinder and checks every test from the meeting again. Afterwards, overwrite
-the self stick and courier, or keep them with your vault.
+the self drive and courier, or keep them with your vault.
 
 **Several cylinders by trust level** are a good idea:
 

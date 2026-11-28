@@ -116,9 +116,9 @@ signatures add three assumptions of their own:
 - **An honest majority:** at most ω members cheat (set at the meeting, shown by `pnp --info`). Members who leave
   or are removed count against ω.
 - **Custody of the splits:** no signer ever reads how the recipients split its functions. A courier only passes
-  between its owner and one member. With one courier per person, reused between members, this also assumes nobody
-  reads the stick's flash chip below its USB interface while holding it. pnp overwrites and reads back every
-  courier between visits.
+  between its owner and one member. With one courier per person, reused between members, pnp overwrites and reads
+  back every courier between visits, and this also assumes nobody recovers what the overwrite didn't reach while
+  holding it: remapped sectors on a spinning disk (preferred), or wear-levelled copies inside a flash chip.
 - **No restored key files:** a signing slot or pad range used twice breaks everything. pnp burns each one before
   using it, but a group folder restored from a backup would bring used ones back.
 
@@ -141,6 +141,6 @@ Who talks to whom is hidden from outsiders, but file sizes and timing aren't.
 | Key drive identity | src/tui.c | run.sh |
 | Seals and messages (pairs, groups) | src/gmsg.c, group.c | tests/group.sh |
 | Group signatures, parameters | src/uss.c, meeting.c | tests/test_uss.c (independent vectors, exhaustive check), group.sh |
-| Meetings, courier sticks | src/meeting.c, courier.c, gmeet.c | tests/group.sh, tests/fuzz/fuzz_courier.c |
+| Meetings, courier drives | src/meeting.c, courier.c, gmeet.c | tests/group.sh, tests/fuzz/fuzz_courier.c |
 | Kill notices, leaving | src/kill.c | tests/group.sh, tests/fuzz/fuzz_kill.c |
 | Group file parsing | src/group.c | tests/fuzz/fuzz_group.c |

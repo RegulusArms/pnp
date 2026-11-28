@@ -210,7 +210,7 @@ check '! PNP_TEST_COURIER_LIE=drop gx --test-setup pair "$G/lie1" 2>"$T/err" && 
     "a courier that ignores writes is caught by the read-back and refused"
 check '! PNP_TEST_COURIER_LIE=wrap gx --test-setup pair "$G/lie2" 2>"$T/err" && grep -q "ignores writes or isn.t as big" "$T/err"' \
     "a courier that fakes its size (wraps around) is caught by the read-back"
-check 'gx --info "$G/p/self.1" >"$T/out" && grep -q "self stick of member 1" "$T/out" && grep -q "pool contribution" "$T/out"' \
+check 'gx --info "$G/p/self.1" >"$T/out" && grep -q "self drive of member 1" "$T/out" && grep -q "pool contribution" "$T/out"' \
     "--info on a self stick lists its records"
 check '! gx --import "$G/p/self.1" "$G/p/m1" 2>"$T/err" && grep -q "already exists" "$T/err"' \
     "a meeting can't be imported twice onto the same cylinder"
@@ -350,7 +350,7 @@ check 'grep -q "From alice (deniable" "$T/gtui.out" && cmp -s "$I/wb/note" "$I/w
 truncate -s 64M "$G/tuisticks/s1"
 gtui "$I/wa" "$I/a" 'pj\rqqq' # p: the groups screen; the second item, Start or join a meeting: the stick list
 check 'grep -q "Pairs and groups" "$T/gtui.out" && grep -q "Pair \"test group\": 2 members, you are alice" "$T/gtui.out" &&
-       grep -q "blank pnp stick" "$T/gtui.out"' \
+       grep -q "blank pnp drive" "$T/gtui.out"' \
     "interactive: p lists your groups, and a meeting starts by choosing among the pnp sticks plugged in"
 mkdir -p "$I/g/a/KEYS" "$I/g/b/KEYS" "$I/g/wa" "$I/g/wb"
 gx --test-setup group:3 "$I/g/s" 2>/dev/null

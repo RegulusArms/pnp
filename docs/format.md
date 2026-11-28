@@ -259,14 +259,14 @@ N²k 2-bit tags, four to a byte. Each tag is (parity(A0 & x) | parity(A1 & x) <<
 then: signatures (1), each: signer, kind (1 group signature, 2 seal), length (4), the bytes; each covers bytes 0..55+16n
 ```
 
-**Courier sticks, self sticks and kill cards** are raw partitions (GPT type `ec8e96c1-785d-4e11-b871-78e0064ee05e`)
+**Courier drives, self drives and kill cards** are raw partitions (GPT type `ec8e96c1-785d-4e11-b871-78e0064ee05e`)
 with no filesystem:
 
 ```
  0 8 "PNPCR001"   9 owner     11 round   13 3 zero        32 4 generation   40 8 where the records end
  8 role (0 courier, 1 self, 2 kill card)  10 visiting   12 done   16 16 group ID   36 4 zero   48 8 capacity
 then records: type, from, to, signer (1 each), key set (2), zero (2), length (8), the data, and a 32-byte BLAKE2b
-of the record's header and data (it catches a bad stick or copy, not an attacker)
+of the record's header and data (it catches a bad drive or copy, not an attacker)
 ```
 
 Record types: 1 roster (the group file), 2 a member's random contribution to a pair's two pools, 3 a signer's own

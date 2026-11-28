@@ -261,9 +261,9 @@ People who meet in person can afterwards seal, sign and send each other files, s
 (see docs/group.md).
 At a meeting each person runs
 .B pnp \-\-meet
-on their own laptop, with two sticks prepared by
+on their own laptop, with two external drives (spinning disks preferred) prepared by
 .BR pnp\-courier\-setup (8):
-a self stick and a courier.
+a self drive and a courier.
 A courier only ever passes between its owner and the member it is addressed to.
 At home,
 .B pnp \-\-import
@@ -328,7 +328,7 @@ also wipes your verify keys.
 .BI \-\-info " " [ PATH ]
 What is left in your groups and who can read what; with
 .IR PATH ,
-what a key, share, ciphertext, group folder or stick is (headers only).
+what a key, share, ciphertext, group folder or pnp drive is (headers only).
 .TP
 .BI \-\-meet " \-\-self DEVICE \-\-courier DEVICE"
 The meeting wizard.
@@ -340,7 +340,7 @@ At home: makes the group folder, and optionally a kill card (half the emergency 
 Moves a key set to another cylinder (the vault).
 .TP
 .BI \-\-courier\-check " DEVICE"
-Writes and reads back a whole stick before a meeting.
+Writes and reads back a whole drive before a meeting.
 .TP
 .BI \-\-groups " FOLDER" ", " \-\-group " NAME"
 Where to look for groups (default: mounted drives and

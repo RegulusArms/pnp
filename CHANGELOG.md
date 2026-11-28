@@ -12,6 +12,10 @@ What changed in each version of pnp, newest first.
   - trusted groups replace a public-key infrastructure;
   - kill notices replace revocation;
   - randomness is a finite resource that's generated, carried, protected and used up.
+- **Courier drives: external spinning hard disks are now preferred** over USB sticks. A spinning disk overwrites
+  in place, so the overwrite between visits really removes the previous member's data. Flash keeps old copies
+  through wear levelling, which widens the meeting's custody assumption. `pnp-courier-setup` says when a drive is
+  flash. On-screen text says "drive" instead of "stick".
 - **The docs state guarantees as bounds and assumptions,** not absolutes:
   - a forgery's probability per attempt, and what it depends on;
   - secrecy as long as the pad is truly random, used once and kept secret;
@@ -22,8 +26,8 @@ What changed in each version of pnp, newest first.
   - **`s` on a file** seals it, signs it, or sends it to a member (or everyone), signed or not.
   - **Enter on a seal, a signature, a kept signed message or a group message** checks it or receives it. Enter on
     a kill notice offers to add your signature.
-  - **`p`** lists your groups and walks you through a meeting: pick your self stick and courier from the pnp sticks
-    plugged in, and the wizard guides each step. It also imports a meeting at home and checks a new stick. Per
+  - **`p`** lists your groups and walks you through a meeting: pick your self drive and courier from the pnp drives
+    plugged in, and the wizard guides each step. It also imports a meeting at home and checks a new drive. Per
     group it shows info, makes a kill notice, leaves, or starts a re-meeting.
 
   Each action runs the same command as the command line, with the same checks.

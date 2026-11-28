@@ -579,7 +579,7 @@ static int rounds(struct wiz *w, struct pnp_rng *rng)
                 goto fail;
             }
             cs_close(&own);
-            fprintf(stderr, "  Your courier is back, moved to your self stick and overwritten.\n");
+            fprintf(stderr, "  Your courier is back, moved to your self drive and overwritten.\n");
         }
         if (round == 1 && meet_make_splits(g, &self, rng, err, sizeof err) < 0)
             goto fail;
@@ -647,7 +647,7 @@ int pnp_meet(const char *self_path, const char *courier_path, const char *sticks
     w.self = self_path, w.courier = courier_path, w.sticks = sticks;
     w.tty = isatty(STDIN_FILENO);
     if (!self_path || !courier_path) {
-        msg("--meet needs your sticks: --self DEVICE --courier DEVICE (the two pnp sticks you brought; see "
+        msg("--meet needs your drives: --self DEVICE --courier DEVICE (the two pnp drives you brought; see "
             "pnp-courier-setup)");
         return 2;
     }
@@ -658,7 +658,7 @@ int pnp_meet(const char *self_path, const char *courier_path, const char *sticks
         pnp_rng_close(&rng);
         return 1;
     }
-    fprintf(stderr, "pnp meeting. Only your own laptop touches your self stick; your courier only ever goes to the "
+    fprintf(stderr, "pnp meeting. Only your own laptop touches your self drive; your courier only ever goes to the "
                     "one member it's addressed to, and comes straight back.\n");
     int ret = 1, c = ask_choice("Are you (c)reating the group, or (j)oining it? ", "cj");
     char err[512], who[48];
@@ -763,7 +763,7 @@ int pnp_meet(const char *self_path, const char *courier_path, const char *sticks
     fprintf(stderr, "Checking everything from every member (in memory)...\n");
     if (trial_import(&w) < 0)
         goto out;
-    fprintf(stderr, "\nThe meeting is complete for you. Keep your self stick on you. At home, alone, on a machine you "
+    fprintf(stderr, "\nThe meeting is complete for you. Keep your self drive on you. At home, alone, on a machine you "
                     "fully control:\n  pnp --import %s YOUR-CYLINDER-FOLDER [--kill-card DEVICE]\n", self_path);
     ret = 0;
     goto out;
@@ -1032,7 +1032,7 @@ int pnp_import_card(const char *self_path, const char *root, const char *card)
         free(dir);
         return 1;
     }
-    msg("imported: %s. Every test signature and seal from the meeting checked.%s Now overwrite the self stick and "
+    msg("imported: %s. Every test signature and seal from the meeting checked.%s Now overwrite the self drive and "
         "couriers, or keep them with your vault", dir,
         card ? " The kill card holds half of your emergency keys: keep it apart from your cylinder." : "");
     free(dir);
@@ -1149,7 +1149,7 @@ int pnp_move(const char *groups, const char *set_prefix, const char *dest_root)
 int pnp_courier_check(const char *dev)
 {
     char err[512];
-    fprintf(stderr, "Writing the whole stick and reading it back (this takes a while on a big stick)...\n");
+    fprintf(stderr, "Writing the whole drive and reading it back (this takes a while on a big drive)...\n");
     if (cs_capacity_check(dev, err, sizeof err) < 0) {
         msg("%s", err);
         return 1;

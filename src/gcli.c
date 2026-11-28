@@ -1090,7 +1090,7 @@ static int cmd_info(const struct opts *o, const char *path)
         struct cstore c;
         char err[512];
         if (cs_open(&c, path, err, sizeof err) == 0) {
-            static const char *const role[] = {"courier", "self stick", "kill card"};
+            static const char *const role[] = {"courier", "self drive", "kill card"};
             char hex[2 * GRP_ID_LEN + 1];
             grp_hex(c.group, hex);
             out("pnp %s of member %d · meeting %.8s, generation %u · visiting member %d, round %d · %llu bytes used",
