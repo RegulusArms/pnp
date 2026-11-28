@@ -27,8 +27,6 @@ The first version is in 0.1.0-alpha.9 ([docs/group.md](docs/group.md)). Still to
   carries).
 - [ ] **Strict courier mode in the wizard:** one courier per pair, kept for good, for groups that won't rely on the
   overwritten-courier assumption.
-- [ ] **Group actions in the interactive mode** (`pnp` alone in a terminal). For now the meeting wizard is
-  `pnp --meet`.
 - [ ] **Telling a member who missed a re-meeting** that a newer generation exists, when something from it arrives.
 
 ## Risky quality-of-life improvements
@@ -44,6 +42,11 @@ Convenient, but each works against part of the design. Only with a good answer t
 
 ## Other
 
+- [ ] **Physical noise as extra random sources:** a microphone listening to background noise, or an SDR tuned to an
+  empty frequency (mostly the receiver's own thermal noise). Each would be XORed in with the others, never used
+  alone. Each needs its own SP 800-90B assessment, extraction that's information-theoretic rather than a hash,
+  and health tests that catch someone injecting sound or a radio signal. To stay libc-only, likely as an "external
+  source": a separately audited capture program feeding pnp through a FIFO.
 - [ ] TPM 2.0 (`/dev/tpmrm0`) as an extra hardware source, for machines whose TPM isn't already behind
   `/dev/hwrng`.
 - [ ] arm64 packages (no RDSEED there: `/dev/hwrng` only).

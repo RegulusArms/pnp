@@ -2,14 +2,42 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.10
+
+- **pnp is now described as what it has become:** an experimental information-theoretic cryptography and
+  communications suite, designed for a world beyond computational security. In it:
+  - physical meetings replace public-key exchanges;
+  - code cylinders replace key stores;
+  - finite signing material replaces reusable signatures;
+  - trusted groups replace a public-key infrastructure;
+  - kill notices replace revocation;
+  - randomness is a finite resource that's generated, carried, protected and used up.
+- **The docs state guarantees as bounds and assumptions,** not absolutes:
+  - a forgery's probability per attempt, and what it depends on;
+  - secrecy as long as the pad is truly random, used once and kept secret;
+  - surviving a power cut as a design objective until real power-loss testing is done (only kills are tested
+    so far).
+
+- **Pairs and groups in the interactive mode.** In `pnp` alone:
+  - **`s` on a file** seals it, signs it, or sends it to a member (or everyone), signed or not.
+  - **Enter on a seal, a signature, a kept signed message or a group message** checks it or receives it. Enter on
+    a kill notice offers to add your signature.
+  - **`p`** lists your groups and walks you through a meeting: pick your self stick and courier from the pnp sticks
+    plugged in, and the wizard guides each step. It also imports a meeting at home and checks a new stick. Per
+    group it shows info, makes a kill notice, leaves, or starts a re-meeting.
+
+  Each action runs the same command as the command line, with the same checks.
+
 ## 0.1.0-alpha.9
 
 - **Pairs and groups (new).** People who meet in person can now authenticate files and send each other
   encrypted messages afterwards, still secure even if P = NP ([docs/group.md](docs/group.md)):
-  - **Seals, for two people** (`pnp --seal FILE --to NAME`, `pnp --check-seal FILE`): nobody else can forge one.
+  - **Seals, for two people** (`pnp --seal FILE --to NAME`, `pnp --check-seal FILE`): anyone else's forgery
+    succeeds with probability at most about 2^-90 for a 1 TiB file.
     A seal proves nothing to anyone outside the pair, so it's deniable, and pnp says so.
   - **Signatures, for groups of 3 or more** (`pnp --sign FILE`, `pnp --verify-sig FILE`): every other member can
-    check them, nobody can forge them, the signer can't deny them, and they can be passed on to another member.
+    check them, and they can be passed on to another member. Forging one, or denying one later, succeeds with
+    probability at most 2^-64 each, if no more members cheat than the group tolerates.
     Built on an unconditionally secure scheme from universal hashing (Amiri, Abidin, Wallden and Andersson, ACNS
     2018). It relies on an honest majority and a fixed group instead of hard problems.
   - **Messages** (`pnp --send FILE --to NAME`, `pnp --receive FILE.pnp`): one-time-pad encrypted, optionally

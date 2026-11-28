@@ -7,5 +7,7 @@
 int pnp_is_group_command(const char *arg);
 /* runs it; the exit status */
 int pnp_group_cli(int argc, char **argv);
+/* the interactive mode calls pnp_group_cli for its group actions: no Landlock fence (it goes on to other folders) */
+void pnp_group_interactive(void);
 
 #endif

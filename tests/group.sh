@@ -325,4 +325,44 @@ printf 'k' >"$W/ki" && "$PNP" -q --shares 3 "$W/ki"
 check 'gx --info "$W/ki.pnp.key.2" >"$T/out" && grep -q "key share (format 002)" "$T/out" && grep -q "share 2 of 3" "$T/out"' \
     "--info works for every pnp key type (here a share), from its header alone"
 
+
+# ---- the interactive mode: the same actions from the file browser (s and p), driven through script(1)
+gtui() { # $1 folder, $2 media folder (stands in for /media/$USER), $3 keys; the screen goes to $T/gtui.out
+    (cd "$1" && printf "$3" | TERM=xterm PNP_TEST_MEDIA="$2" PNP_TEST_STICKS="$G/tuisticks" \
+        script -qec "$PNP" "$T/gtui.out" >/dev/null 2>&1)
+}
+I="$G/tui" && mkdir -p "$I/a/KEYS" "$I/b/KEYS" "$I/wa" "$I/wb" "$G/tuisticks"
+gx --test-setup pair "$I/p" 2>/dev/null
+mv "$I"/p/m1/pnp-group-* "$I/a/KEYS/" && mv "$I"/p/m2/pnp-group-* "$I/b/KEYS/"
+printf 'the lease\n' >"$I/wa/doc"
+gtui "$I/wa" "$I/a" 'js\r\r\nq' # the list: .., doc; s on doc: [Seal it], [bob]; Enter after; quit
+check '[[ -f "$I/wa/doc.pnp.seal" ]] && grep -q "sealed for bob" "$T/gtui.out"' \
+    "interactive: s on a file seals it for the other member of a pair"
+cp "$I/wa/doc" "$I/wa/doc.pnp.seal" "$I/wb/"
+gtui "$I/wb" "$I/b" 'jj\r\nq' # .., doc, doc.pnp.seal: Enter on the seal
+check 'grep -q "Sealed by alice. Only you and alice could have made this" "$T/gtui.out"' \
+    "interactive: Enter on a seal checks it"
+printf 'meet at noon\n' >"$I/wa/note"
+gx --send "$I/wa/note" --to bob --groups "$I/a/KEYS" -q -o "$I/wb/note.pnp"
+gtui "$I/wb" "$I/b" 'jjj\r\nq' # .., doc, doc.pnp.seal, note.pnp: Enter receives it
+check 'grep -q "From alice (deniable" "$T/gtui.out" && cmp -s "$I/wb/note" "$I/wa/note"' \
+    "interactive: Enter on a group message receives it"
+truncate -s 64M "$G/tuisticks/s1"
+gtui "$I/wa" "$I/a" 'pj\rqqq' # p: the groups screen; the second item, Start or join a meeting: the stick list
+check 'grep -q "Pairs and groups" "$T/gtui.out" && grep -q "Pair \"test group\": 2 members, you are alice" "$T/gtui.out" &&
+       grep -q "blank pnp stick" "$T/gtui.out"' \
+    "interactive: p lists your groups, and a meeting starts by choosing among the pnp sticks plugged in"
+mkdir -p "$I/g/a/KEYS" "$I/g/b/KEYS" "$I/g/wa" "$I/g/wb"
+gx --test-setup group:3 "$I/g/s" 2>/dev/null
+mv "$I"/g/s/m1/pnp-group-* "$I/g/a/KEYS/" && mv "$I"/g/s/m2/pnp-group-* "$I/g/b/KEYS/"
+printf 'minutes\n' >"$I/g/wa/min"
+gtui "$I/g/wa" "$I/g/a" 'js\r\nq' # s on min: [Sign it]
+cp "$I/g/wa/min" "$I/g/wa/min.pnp.sig" "$I/g/wb/" 2>/dev/null
+gtui "$I/g/wb" "$I/g/b" 'jj\r\nq' # .., min, min.pnp.sig: Enter checks it
+check 'grep -q "Signed by alice, accepted at level 1." "$T/gtui.out"' \
+    "interactive: in a group, s signs a file, and Enter on the signature checks it for another member"
+gtui "$I/wa" "$I/a" 'p\rjj\rj\r\nqq' # p, the pair, Leave..., Yes
+check 'ls "$I"/wa/leave-*.pnp-kill >/dev/null 2>&1 && grep -q "end of this pair is written" "$T/gtui.out"' \
+    "interactive: leaving (ending a pair) from the groups screen writes the notice to send"
+
 export PNP_TEST_HWRNG="$T/rng"

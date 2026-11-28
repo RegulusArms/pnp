@@ -8,13 +8,16 @@ guarantee rests on" is the short version; this is the long one.
 For a file encrypted with an honest copy of pnp on a trustworthy computer:
 
 1. **Secrecy.** Without the key, the ciphertext tells an attacker nothing about the file except its length, however
-   much computing power they have, even if P = NP. (One-time pad: [format.md](format.md).)
+   much computing power they have, even if P = NP, as long as the pad is truly random, used once and kept secret.
+   (One-time pad: [format.md](format.md).)
 2. **Integrity.** Any change to the ciphertext or the key, even one bit, is detected when decrypting (or with
-   `--verify`), and nothing is written. A forger's chance is at most about 2^-90 for a 1 TiB file, again whatever
-   their computing power. (Wegman-Carter one-time MAC: src/mac.c.)
-3. **No lost files.** A failure, a cancel, a crash or a power cut never leaves a half-written file under a real
-   name, never replaces an existing file without `-f`, and never loses the old key when `-f` replaces one.
-   ([recovery.md](recovery.md).)
+   `--verify`), and nothing is written, except with probability at most (L + 1) / (2^127 − 1) per forgery attempt
+   (L: the file's length in 8-byte blocks; about 2^-90 for a 1 TiB file), whatever the forger's computing power. (Wegman-Carter one-time MAC: src/mac.c.)
+3. **No lost files (a design objective).** A failure, a cancel or a crash is designed never to leave a
+   half-written file under a real name, never to replace an existing file without `-f`, and never to lose the
+   old key when `-f` replaces one. This is tested by killing pnp at every step of saving. A power cut is meant to
+   be covered by the same design (fsyncs before each rename and of the folder after), but that remains an
+   objective until real power-loss testing is done (TODO.md). ([recovery.md](recovery.md).)
 
 Secrecy and integrity are *information-theoretic*: they don't depend on any problem being hard to compute. That's
 the point of pnp. Everything below is about what they rest on.

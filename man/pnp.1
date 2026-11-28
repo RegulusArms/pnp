@@ -1,6 +1,6 @@
 .TH PNP 1 "2026-11-27" "pnp @VERSION@" "User Commands"
 .SH NAME
-pnp \- one-time pad file encryption that stays secure even if P = NP
+pnp \- experimental information-theoretic cryptography and communications suite
 .SH SYNOPSIS
 .B pnp
 .RB [ \-f ]
@@ -268,6 +268,12 @@ A courier only ever passes between its owner and the member it is addressed to.
 At home,
 .B pnp \-\-import
 makes the group's folder on the code cylinder.
+.PP
+The interactive mode offers the same: in its file browser,
+.B s
+seals, signs or sends the file under the cursor, Enter checks a seal or signature or receives a message, and
+.B p
+lists your groups, runs meetings and imports, and per group shows info, makes kill notices and leaves.
 .TP
 .BI \-\-seal " FILE " \-\-to " MEMBER"
 Writes
@@ -280,7 +286,9 @@ Checks a seal. A seal is checked once; a replay is refused.
 .BI \-\-sign " FILE"
 Groups of 3 or more: writes
 .IR FILE .pnp.sig,
-which every other member can check and the signer can't deny.
+which every other member can check. A forgery, or a signature its signer could later deny, succeeds with
+probability at most 2^\-64, provided no more members cheat than the group tolerates and the meeting's custody rules
+were kept.
 .TP
 .BI \-\-verify\-sig " FILE " [ SIG ]
 Checks a signature, or a kept signed message
@@ -366,8 +374,9 @@ With
 the files being replaced are first renamed aside (to hidden
 .IR .NAME.XXXXXX.pnp-old )
 and deleted only once every new file is in place. If saving any new file fails, the old ones are put back, so an
-old key is never lost. After a crash at that moment, the old files are still there under those names (see
-RECOVERY).
+old key isn't lost. After a crash at that moment, the old files are still there under those names (see
+RECOVERY). This is tested by killing pnp at every step; that it also holds across a power cut is a design
+objective, not yet tested.
 .PP
 The health tests catch a hardware source that fails (stuck, repeating, badly biased); they can't prove one is truly
 random. In a virtual machine, which
@@ -381,8 +390,9 @@ it stops instead.
 A one-time pad hides the contents but doesn't detect changes, so
 .B pnp
 adds a one-time MAC (Wegman\-Carter, mod 2^127\-1), keyed by 32 more random bytes from the hardware sources kept in
-the key, with its tag at the end of the ciphertext. Like the pad, it can't be forged with any amount of computing
-power. If the ciphertext or the key has been changed or damaged, decrypting fails and nothing is written. Files from
+the key, with its tag at the end of the ciphertext. A forgery goes unnoticed with probability at most
+(L+1)/(2^127\-1) per attempt, L being the file's length in 8-byte blocks (about 2^\-90 for 1 TiB), whatever the
+forger's computing power. If the ciphertext or the key has been changed or damaged, decrypting fails and nothing is written. Files from
 pnp 0.1.0\-alpha.2 or older have no MAC; they still decrypt, with a note saying so. The ciphertext and key also
 record which encryption they belong to, so a wrong key is refused.
 .PP

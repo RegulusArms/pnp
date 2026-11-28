@@ -3,11 +3,11 @@
 People who meet in person can afterwards authenticate files and send each other encrypted messages, in a way that
 stays secure even if P = NP.
 
-- **A pair** (two people) gets **seals**: nobody else can forge one, but it proves nothing to anyone outside the
-  pair.
+- **A pair** (two people) gets **seals**: anyone else's forgery succeeds only with a tiny probability (below), but
+  a seal proves nothing to anyone outside the pair.
 - **A group** (3 or more) also gets **signatures**:
   - every other member can check them;
-  - nobody can forge them, and the signer can't deny them;
+  - forging one, or denying one later, succeeds only with a tiny probability, under the assumptions below;
   - they can be passed on to another member.
 - **Both** can send each other one-time-pad **messages**.
 
@@ -19,13 +19,17 @@ supply. When it runs out, you meet again.
 
 | | Pair: seal | Group: signature | Message |
 |---|---|---|---|
-| Nobody outside can forge it | yes | yes | yes (one-time MAC) |
-| Contents secret | (not encrypted) | (not encrypted) | yes (one-time pad) |
+| A forgery by an outsider succeeds with probability at most | (L + 1) / (2^127 − 1) per attempt | 2^-64 | (L + 1) / (2^127 − 1) per attempt |
+| A forgery by other members succeeds with probability at most | (the other person could make it) | 2^-64, if at most ω members collude | (the other person could make it) |
+| Contents secret | (not encrypted) | (not encrypted) | yes: perfect secrecy (one-time pad) |
 | The recipient can prove it to others | **no**: deniable | yes, to the group's members | only if signed |
-| The signer can deny it later | yes (deniable) | **no** | only if unsigned |
+| The signer can deny it later | yes (deniable) | only with probability at most 2^-64 | only if unsigned |
 | Who can check it | the other person | every other member | the recipient |
 
-Against an attacker with unlimited computing power, these hold only if:
+L is the file's (or message's) length in 8-byte blocks: (L + 1) / (2^127 − 1) is about 2^-90 for a 1 TiB file.
+These bounds hold whatever the attacker's computing power, even if P = NP. A signature's three failures (forgery,
+repudiation, one honest member accepting what another rejects) are each at most 2^-64, the target pnp's
+parameters are chosen for ("How it works"). The bounds hold only if:
 
 1. **The keys are truly random.** They come from pnp's hardware sources, as for any pad.
 2. **Nothing is used twice.** pnp uses up every slot and pad range before releasing anything, and never restores
@@ -60,7 +64,8 @@ Each person brings:
 
 ## The meeting
 
-Everyone runs the wizard on their own laptop:
+Everyone runs the wizard on their own laptop: from the interactive mode (`pnp` alone, then `p`, "Start or join a
+meeting", and choose your two sticks), or directly:
 
 ```
 pnp --meet --self /dev/sdX1 --courier /dev/sdY1
@@ -121,12 +126,18 @@ pnp --info                           what's left, who can read what, warnings
 pnp finds your groups on mounted drives (`/media/$USER/*`); `--groups FOLDER` points it elsewhere, and
 `--group NAME` picks one when you're in several.
 
+In the interactive mode (`pnp` alone), the same actions are a key away:
+- `s` on a file seals, signs or sends it.
+- Enter on a seal, a signature or a message checks or receives it.
+- `p` opens your groups: info, kill notices, leaving, meetings and imports.
+
 - **A message's header** is a one-time random locator. It names no group, pair or key set, and no two messages
   share one. File size and timing still show.
 - **A message names its sender and recipients** inside both the signature and the encryption. So a signed message
   passed on to someone else shows who it was originally sent to (Davis, 2001).
 - **Messages arriving out of order** are found up to 16 items ahead; `--lookahead N` looks further.
-- **A signature isn't exact** when any of its tags fails to match. An honest signer's signatures are always exact,
+- **A signature isn't exact** when any of its tags fails to match. An honest signer's signatures, checked with
+  undamaged keys, are always exact,
   so pnp reports any other as "NOT EXACT: someone tampered with it", even when it's still accepted at a lower
   level. Raise it with the group.
 - **`--level -1`** is your vote in a dispute. A signature is valid if more than half the members accept it at that

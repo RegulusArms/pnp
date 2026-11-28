@@ -1,8 +1,9 @@
 # Recovering after an interrupted run
 
 pnp writes every output under a hidden name first and renames it into place only when it's complete
-(src/fileio.c). So a run that's killed, crashes or loses power partway never leaves a half-written file under a
-real name, and never loses an old key. It can leave hidden files behind, though, and the next pnp run that
+(src/fileio.c). It's designed so that a run that's killed, crashes or loses power partway never leaves a
+half-written file under a real name, and never loses an old key. Kills and crashes are tested (below); a power
+cut is covered by design only, until real power-loss testing is done. It can leave hidden files behind, though, and the next pnp run that
 writes into (or reads from) that folder points them out:
 
 ```
@@ -64,4 +65,6 @@ fsync, rename, link and unlink, for encrypting with the key on another filesyste
 key, `-f` with three shares, and decrypting over an existing file. After each kill it checks that the plaintext is
 untouched, that a ciphertext under its real name has its whole key, and that the state is either finished or is
 put back exactly by the "undo" above. A kill leaves the file names in every state they can be in; that each state
-also survives a power cut rests on pnp's fsyncs (of each file before its rename, and of the folder after).
+also survives a power cut is a design objective, resting on pnp's fsyncs (of each file before its rename, and of
+the folder after) and on the filesystem honouring them. It hasn't been tested with a simulated power cut yet
+(dm-log-writes or dm-flakey; TODO.md).

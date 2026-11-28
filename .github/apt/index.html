@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pnp: install</title>
-<meta name="description" content="pnp: one-time pad file encryption that stays secure even if P = NP. Install it from its apt repository.">
+<meta name="description" content="pnp: an experimental information-theoretic cryptography and communications suite, designed for a world beyond computational security. Install it from its apt repository.">
 <style>
   :root {
     --bg: #fbfbf9; --fg: #1d1f21; --muted: #5c6166; --line: #e2e2dc; --code-bg: #f1f1ec; --accent: #9a3412;
@@ -33,15 +33,17 @@
 <body>
 <main>
   <h1>pnp</h1>
-  <p class="tagline">One-time pad file encryption that stays secure even if P = NP.</p>
+  <p class="tagline">An experimental information-theoretic cryptography and communications suite, designed for a world
+  beyond computational security.</p>
 
   <p>pnp encrypts any file with a key of truly random bytes as long as the file, read from your machine's hardware
-  random number generators. A one-time pad doesn't rely on any problem being hard to compute, so no amount of
-  computing power can break it.</p>
+  random number generators. A one-time pad doesn't rely on any problem being hard to compute: as long as the key is
+  truly random, used once and kept secret, the file can't be read without it, however much computing power is
+  used.</p>
 <pre>pnp                      # browse your files and encrypt or decrypt them step by step
 pnp photo.jpg            # writes photo.jpg.pnp and its key photo.jpg.pnp.key
 pnp -d photo.jpg.pnp     # gives back photo.jpg</pre>
-  <p>Without the key, nobody can read the file; with it, anyone can. So the weakest link is how you store your keys:
+  <p>Without the key, the encrypted file reveals nothing but its length; with it, anyone can read the file. So the weakest link is how you store your keys:
   keep them offline and apart from the <code>.pnp</code> files.</p>
 
   <h2>Install</h2>

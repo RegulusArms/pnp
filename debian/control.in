@@ -8,12 +8,13 @@ Suggests: gdisk
 Section: utils
 Priority: optional
 Homepage: https://pnp.regulusarms.com
-Description: one-time pad file encryption that stays secure even if P = NP
- pnp encrypts any file with a one-time pad: a key of random bytes as long as
- the file, read from the machine's hardware random number generators
- (/dev/hwrng and the CPU's RDSEED instruction), health-checked as they're
- read, and combined with XOR. A one-time pad's security doesn't rest on any
- problem being hard to compute, so it holds even if P = NP.
+Description: experimental information-theoretic cryptography and communications suite
+ pnp is designed for a world beyond computational security: its schemes'
+ security is a probability bound that no amount of computing changes, so it
+ holds even if P = NP. At its core it encrypts any file with a one-time pad:
+ a key of random bytes as long as the file, read from the machine's hardware
+ random number generators (/dev/hwrng and the CPU's RDSEED instruction),
+ health-checked as they're read, and combined with XOR.
  .
  pnp FILE writes FILE.pnp and its key FILE.pnp.key; pnp -d FILE.pnp
  decrypts it; pnp alone opens an interactive file browser that shows what
@@ -22,8 +23,11 @@ Description: one-time pad file encryption that stays secure even if P = NP
  computationally secure extra, not part of the P = NP claim).
  .
  People who meet in person can also seal files (pairs) and sign them
- (groups of 3 or more) so that nobody else can forge them, and send each
- other one-time-pad messages; the key material travels on raw courier
- sticks (pnp-courier-setup, which needs gdisk).
+ (groups of 3 or more), with forgery bounded by a small probability rather
+ than by hard problems, and send each other one-time-pad messages. Key
+ material travels on raw courier sticks (pnp-courier-setup, which needs
+ gdisk), and compromised keys are reported with kill notices.
+ .
+ Experimental alpha software, not yet independently audited.
  .
  Members of the pnp group may read /dev/hwrng and use pnp's courier sticks.

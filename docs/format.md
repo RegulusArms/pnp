@@ -41,7 +41,7 @@ tag = acc + s
 
 That is, tag = m₁k^(L+1) + m₂k^L + … + m_Lk² + len(M)·k + s (mod p).
 
-- **Why it can't be forged:** s is used once, so the tag tells an attacker nothing about k. For any change to the
+- **Why a forgery fails, except with a tiny probability:** s is used once, so the tag tells an attacker nothing about k. For any change to the
   ciphertext (or to the key's pad), the difference between the true and the changed tag is a nonzero polynomial in
   k of degree at most L + 1, so a change goes unnoticed with probability at most (L + 1) / p. That's about 2^-90 for
   a 1 TiB file, whatever computing power the attacker has.

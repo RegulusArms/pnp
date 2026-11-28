@@ -1,6 +1,7 @@
 # Your code cylinder: a key drive you carry
 
-pnp's encryption can't be broken by any amount of computing power, even if P = NP. That strength has a price:
+Without its key, a pnp ciphertext reveals nothing about the file but its length, however much computing power is
+used, even if P = NP (as long as the key is truly random, used once and kept secret). That strength has a price:
 **everything depends on who can physically get hold of your keys.** This guide shows how to set up a dedicated key
 drive (your "code cylinder"), encrypt it, carry it, and destroy keys when you need to.
 
@@ -83,14 +84,16 @@ both. Give them different passphrases.
 
 **Who the two locks stop: common criminals, not the Galactic Federation.** Someone who steals or finds the drive
 has to crack the drive's passphrase, and then each key's, at about a gigabyte of memory and seconds per guess
-for both. With generated passphrases nobody can do that today, states included. If P = NP comes with a practical
+for both. With generated passphrases that's far beyond any attacker known today, states included: an estimate
+from today's hardware and algorithms, not a proof. If P = NP comes with a practical
 algorithm, though, both locks fall to whoever can afford enough computing for it: neither LUKS's AES key nor
 `--protect`'s ChaCha20 key needs the passphrase to be found, and checking a guessed key is a tiny job. A thief
 with a rack of GPUs is still kept out unless the algorithm is very good; a state with thousands of racks isn't
 ([how long would it take?](https://pnp.regulusarms.com/p-np.html)). So the locks are for the drive that's lost,
 stolen or copied by an ordinary criminal. Against a state, what counts is that the drive never leaves your
 custody, and that keys you must keep from a state are split into shares on drives in different places (below):
-a set missing one share tells any attacker nothing, however much computing they have.
+a set missing one share tells any attacker nothing, however much computing they have (the shares' bytes being
+truly random).
 
 ## Setting it up
 
@@ -302,7 +305,7 @@ follows different rules from ordinary keys:
 ## Summary
 
 - pnp's keys are its only secret, so how you store them is pnp's weakest link. Whoever has a key and its
-  ciphertext can read the file. Nobody else can, ever.
+  ciphertext can read the file. Without the key, the ciphertext reveals nothing but its length.
 - Keep keys on a dedicated external hard disk, encrypted with LUKS2 and ext4 inside, written straight there with
   `--key-out`. The encryption makes a lost or stolen drive expensive to use, never safe: physical custody comes
   first.
