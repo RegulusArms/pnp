@@ -1,0 +1,19 @@
+Origin: pnp
+Label: pnp
+Codename: stable
+Date: Sat, 28 Nov 2026 04:30:34 UTC
+Architectures: amd64
+Components: main
+Description: pnp releases (merges to main), for Debian 12+, Ubuntu 22.04+ and systems based on them
+MD5Sum:
+ 9c59f517613d71cf9ad54748fc38b460 1869 main/binary-amd64/Packages
+ 342bd5bf8510d6b713feb478a469b3d9 1104 main/binary-amd64/Packages.gz
+ 9439f026546ec7906f55917b5bfcf443 159 main/binary-amd64/Release
+SHA1:
+ 286495047b3fa2d144f166fc0804eac62bc2b582 1869 main/binary-amd64/Packages
+ 70b680b35ddb64f31147dba509194f884c792d13 1104 main/binary-amd64/Packages.gz
+ f212f9806e87089c77073482960ac2c98d684d25 159 main/binary-amd64/Release
+SHA256:
+ ae23fe7c6535810a4e256c9618ff5f615c032c4dbadbdd27a6094629eebfa2bb 1869 main/binary-amd64/Packages
+ d13b1c2ac08d8c2b806225c04e4bedf3367bcd4e3146f01f8ad5ed15d7b14acc 1104 main/binary-amd64/Packages.gz
+ 527eacb5c6d3e1f361840f66742ff48e353eac1493ff4cce12c524864d0fb5d1 159 main/binary-amd64/Release

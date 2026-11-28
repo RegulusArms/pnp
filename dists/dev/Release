@@ -1,0 +1,19 @@
+Origin: pnp
+Label: pnp
+Codename: dev
+Date: Sat, 28 Nov 2026 08:58:57 UTC
+Architectures: amd64
+Components: main
+Description: pnp development builds (the DEV branch), for Debian 12+, Ubuntu 22.04+ and systems based on them
+MD5Sum:
+ 7b76c1e4b3ccfe8b8bcd0b25e675228d 1899 main/binary-amd64/Packages
+ e4fdbb8debf25ab073f82b0e8689f1cd 1119 main/binary-amd64/Packages.gz
+ 76ad04c097bb0abb5ec0b2016fcb0a6e 169 main/binary-amd64/Release
+SHA1:
+ 07a2490261d3957d08a563c2e8d579cdaec16565 1899 main/binary-amd64/Packages
+ 430cadddd6e757a3fc43e2f26e1c014f62c8e112 1119 main/binary-amd64/Packages.gz
+ 56cb1291c89e409d2beda2c33dfda191b7c901a9 169 main/binary-amd64/Release
+SHA256:
+ 31a2bfbd92c9e17098b0e356b2fa34994aadf6683b4ec1ee11162f838a6fbe45 1899 main/binary-amd64/Packages
+ 2e874c2b45dd6b7c159e584a2aade33cfa6b392894fcce4a10013452b0b463e7 1119 main/binary-amd64/Packages.gz
+ de0e9048347b56f4c93f4cfe1522835dd2f7ccca38640a1e5bd90d7234edbb3e 169 main/binary-amd64/Release

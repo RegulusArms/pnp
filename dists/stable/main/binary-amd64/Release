@@ -1,0 +1,5 @@
+Component: main
+Origin: pnp
+Label: pnp
+Architecture: amd64
+Description: pnp releases (merges to main), for Debian 12+, Ubuntu 22.04+ and systems based on them

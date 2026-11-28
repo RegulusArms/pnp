@@ -1,0 +1,21 @@
+# The apt repository's suites (reprepro's conf/distributions). CI's apt job copies this file over gh-pages' own before
+# adding a build, so change suites here, not on gh-pages. pnp is one .deb for every release (built on the oldest
+# supported one), so there's a suite per channel, not per release:
+#   stable   releases (merges to main)
+#   dev      development builds (the DEV branch)
+
+Origin: pnp
+Label: pnp
+Codename: stable
+Description: pnp releases (merges to main), for Debian 12+, Ubuntu 22.04+ and systems based on them
+Architectures: amd64
+Components: main
+SignWith: B605C24B0B68BEF13104D1048A29173719C44365
+
+Origin: pnp
+Label: pnp
+Codename: dev
+Description: pnp development builds (the DEV branch), for Debian 12+, Ubuntu 22.04+ and systems based on them
+Architectures: amd64
+Components: main
+SignWith: B605C24B0B68BEF13104D1048A29173719C44365

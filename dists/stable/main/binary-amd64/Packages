@@ -1,0 +1,40 @@
+Package: pnp
+Version: 0.1.0~alpha.13
+Architecture: amd64
+Maintainer: RegulusArms <ross@regulusarms.com>
+Installed-Size: 897
+Depends: libc6 (>= 2.34), passwd
+Suggests: gdisk
+Homepage: https://pnp.regulusarms.com
+Priority: optional
+Section: utils
+Filename: pool/main/p/pnp/pnp_0.1.0~alpha.13_amd64.deb
+Size: 196832
+SHA256: 089ef49953803448732bd0d6cc6b44ca2b734d387cf1b02e9c768104fd051f35
+SHA1: bd2de057d825c626f40a623cd04289948ddbfcc4
+MD5sum: 2fa856e10c00ddf7fa968cb9df3ec54e
+Description: experimental information-theoretic cryptography and communications suite
+ pnp is designed for a world beyond computational security: its schemes'
+ security is a probability bound that no amount of computing changes, so it
+ holds even if P = NP. At its core it encrypts any file with a one-time pad:
+ a key of random bytes as long as the file, read from the machine's hardware
+ random number generators (/dev/hwrng and the CPU's RDSEED instruction),
+ health-checked as they're read, and combined with XOR.
+ .
+ pnp FILE writes FILE.pnp and its key FILE.pnp.key; pnp -d FILE.pnp
+ decrypts it; pnp alone opens an interactive file browser that shows what
+ will be written, and which key on the key drive will be used. Keys can be
+ split into shares, and optionally locked with a passphrase (a
+ computationally secure extra, not part of the P = NP claim).
+ .
+ People who meet in person can also seal files (pairs) and sign them
+ (groups of 3 or more), with forgery bounded by a small probability rather
+ than by hard problems, and send each other one-time-pad messages. Key
+ material travels on raw courier drives (pnp-courier-setup, which needs
+ gdisk; external spinning disks preferred), and compromised keys are
+ reported with kill notices.
+ .
+ Experimental alpha software, not yet independently audited.
+ .
+ Members of the pnp group may read /dev/hwrng and use pnp's courier drives.
+
