@@ -2,6 +2,14 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.14
+
+- **Pairs and groups, crash safety:** when a seal or message reserves its pad, the pool's next locator and next
+  offset are now saved in one write. Before, they were two writes, and a crash between them could leave the pool
+  with the new locator but the old offset. That never gave out pad twice (nothing from the reserved pad is read
+  or sent until it's saved), but it wasted a locator and left the pool's header inconsistent. The crash tests now
+  stop pnp on both sides of that write and check the header after each one.
+
 ## 0.1.0-alpha.13
 
 - **Documentation brought up to date:**

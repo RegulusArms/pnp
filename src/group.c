@@ -504,11 +504,13 @@ int pool_reserve(struct pool *p, uint64_t len, uint32_t *loc_i, uint8_t entry[GR
     /* reserved before anything is read or released: a crash after this can only waste them, never reuse them */
     p->next_loc++;
     p->next_off += len;
-    uint8_t c[16];
-    put32(c, p->nloc), put32(c + 4, p->next_loc), put64(c + 8, p->bytes);
-    uint8_t o[8];
-    put64(o, p->next_off);
-    if (pwrite(p->fd, c + 4, 4, 36) != 4 || pwrite(p->fd, o, 8, 48) != 8)
+    /* next locator (36), pad bytes (40, unchanged) and next offset (48) are contiguous: one write, so the header
+     * never holds one without the other. (A torn header couldn't reuse pad anyway: nothing of this item is read or
+     * sent before the fsync below returns, so the worst a crash here does is waste it.) */
+    uint8_t c[20];
+    put32(c, p->next_loc), put64(c + 4, p->bytes), put64(c + 12, p->next_off);
+    pnp_crash_point("pool reserve, before saving the header");
+    if (pwrite(p->fd, c, sizeof c, 36) != (ssize_t)sizeof c)
         goto io;
     pnp_crash_point("pool reserve");
     if (fsync(p->fd) < 0)

@@ -226,10 +226,17 @@ check '[[ $(od -An -tx1 -N 4096 "$G/p/courier.1" | tr -d " \n" | grep -c "504e50
 # ---- crash safety: killed at every step of sealing, no item is ever used twice
 gx --test-setup pair "$G/cr" 2>/dev/null
 printf 'c' >"$W/cr"
-ok=1
-for n in 1 2 3; do
+crp=$(ls "$G"/cr/m1/pnp-group-*/set-*/pool.1-2 | xargs ls -S | head -1) # the period's pool (the larger one)
+pool_even() { # each seal reserves 32 bytes (its MAC key): next offset (48) == 32 × next locator (36), or it's torn
+    (($(od -An -tu8 -j48 -N8 "$crp") == 32 * $(od -An -tu4 -j36 -N4 "$crp")))
+}
+torn=0
+for n in 1 2 3 4; do # 1, 2: before and after pool_reserve saves the header; 3, 4: writing the seal
     PNP_TEST_CRASH_AT=$n gx --seal "$W/cr" --to bob --groups "$G/cr/m1" -f -o "$W/cr.$n" >/dev/null 2>&1
+    pool_even || torn=1
 done
+check '((torn == 0))' \
+    "a crash inside pool_reserve never leaves its header torn (the new locator saved without the new offset)"
 gx --seal "$W/cr" --to bob --groups "$G/cr/m1" -q -f -o "$W/cr.ok"
 check 'gx --check-seal "$W/cr" "$W/cr.ok" --groups "$G/cr/m2" >/dev/null' \
     "after crashes at every step of sealing, the next seal still checks"
