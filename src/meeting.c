@@ -283,6 +283,8 @@ int meet_make_splits(const struct grp *roster, struct cstore *self, struct pnp_r
                 for (uint32_t sl = 0; sl < s->slots; sl++) {
                     if (cs_read(self, &blk, (uint64_t)sl * nk * USS_FN_LEN, fns, (size_t)nk * USS_FN_LEN) < 0)
                         goto io;
+                    if ((size_t)(b + 1) * s->k > nk) /* N sets of k: always within the block */
+                        goto fail;
                     const uint32_t *p = perm + (size_t)sl * nk + (size_t)b * s->k;
                     for (uint32_t i = 0; i < s->k; i++) {
                         uint8_t e[USS_SPLIT_LEN];

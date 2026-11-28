@@ -19,7 +19,7 @@ young program into a hardened one.
 
 ## Pairs and groups
 
-The first version is in 0.1.0-alpha.8 ([docs/group.md](docs/group.md)). Still to come:
+The first version is in 0.1.0-alpha.9 ([docs/group.md](docs/group.md)). Still to come:
 
 - [ ] **A group pool:** one pad shared by the whole group, so a message to everyone is one ciphertext instead of one
   per member. Messages on it would always be signed, since every member could make its MAC.

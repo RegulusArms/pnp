@@ -137,8 +137,12 @@ static int body_len(struct body *b, char *err, size_t errlen)
     if (!b->path)
         return 0;
     struct stat st;
-    if (stat(b->path, &st) < 0 || !S_ISREG(st.st_mode)) {
-        snprintf(err, errlen, "%s: %s", b->path, errno ? strerror(errno) : "not a regular file");
+    if (stat(b->path, &st) < 0) {
+        snprintf(err, errlen, "%s: %s", b->path, strerror(errno));
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        snprintf(err, errlen, "%s: not a regular file", b->path);
         return -1;
     }
     b->len = (uint64_t)st.st_size;
@@ -413,7 +417,7 @@ int msg_send(struct grp *g, struct grp_set *s, int to, const char *in_path, cons
         memcpy(h, kills, klen), h += klen;
     put16(h, (uint16_t)nlen), h += 2;
     memcpy(h, name, nlen), h += nlen;
-    put64(h, (uint64_t)st.st_size), h += 8;
+    put64(h, (uint64_t)st.st_size);
     struct src sr = {head, hlen, fd, (uint64_t)st.st_size, 0, NULL, 0, 0, 0};
     {
         /* room in the pool first: a send that can't happen mustn't use up a signing slot */

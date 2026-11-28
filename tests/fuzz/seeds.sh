@@ -3,6 +3,7 @@
 # cases, so fuzzing starts from inputs that get deep into each parser.
 #   tests/fuzz/seeds.sh build/pnp-test OUT     makes OUT/header, OUT/keys, OUT/passfile, OUT/verify
 set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
 PNP="$(realpath "$1")"
 OUT="$(realpath -m "$2")"
 W="$(mktemp -d)"
@@ -70,4 +71,9 @@ printf 'PNPKL001' >"$OUT/kill/short"
 end=$(od -An -t u8 -j 40 -N 8 "$W/p/self.1" | tr -d ' ')
 if (( end < 65536 )); then head -c "$end" "$W/p/self.1" >"$OUT/courier/self"; fi
 head -c 64 "$W/p/courier.1" >"$OUT/courier/empty"
+
+# inputs the fuzzers once crashed on, kept so they're replayed on every run (tests/fuzz/regress/<harness>-<what>)
+for f in "$HERE"/regress/*; do
+    [[ -f $f ]] && cp "$f" "$OUT/$(basename "$f" | cut -d- -f1)/regress-$(basename "$f")"
+done
 

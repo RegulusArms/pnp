@@ -26,7 +26,7 @@ struct kill_notice {
     int suspect_member;
     uint32_t suspect_slot;
     int nsig;
-    struct kill_sig sig[GRP_MAX_MEMBERS];
+    struct kill_sig *sig; /* nsig of them (malloc'd; kill_free frees them) */
     size_t frame_len; /* bytes before the signatures: what each signature covers */
 };
 

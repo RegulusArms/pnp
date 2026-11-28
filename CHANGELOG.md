@@ -2,7 +2,7 @@
 
 What changed in each version of pnp, newest first.
 
-## 0.1.0-alpha.8
+## 0.1.0-alpha.9
 
 - **Pairs and groups (new).** People who meet in person can now authenticate files and send each other
   encrypted messages afterwards, still secure even if P = NP ([docs/group.md](docs/group.md)):

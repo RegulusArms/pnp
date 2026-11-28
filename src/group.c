@@ -77,6 +77,13 @@ size_t grp_file_len(int n, int nsets)
 }
 
 static int terminated(const uint8_t *b, size_t len) { return memchr(b, 0, len) != NULL; }
+static int all_zero(const uint8_t *b, size_t len)
+{
+    uint8_t d = 0;
+    for (size_t i = 0; i < len; i++)
+        d |= b[i];
+    return d == 0;
+}
 
 int grp_parse(const uint8_t *b, size_t len, struct grp *g)
 {
@@ -96,8 +103,9 @@ int grp_parse(const uint8_t *b, size_t len, struct grp *g)
         g->nsets > GRP_MAX_SETS || g->threshold < 1 || g->threshold > g->n || g->lmax > 8 ||
         (g->n >= 3 && (g->omega < 1 || 2 * g->omega >= g->n)) || g->dispute_days > 36500)
         return -1;
-    if (len != grp_file_len(g->n, g->nsets) || !terminated(b + 64, GRP_NAME_LEN))
-        return -1;
+    if (len != grp_file_len(g->n, g->nsets) || !terminated(b + 64, GRP_NAME_LEN) || b[35] != 0 ||
+        !all_zero(b + 52, 12))
+        return -1; /* the zero bytes must be zero: one file, one way to write it */
     memcpy(g->name, b + 64, GRP_NAME_LEN);
     const uint8_t *p = b + GRP_HDR_LEN;
     for (int i = 0; i < g->n; i++, p += GRP_MEMBER_LEN) {
@@ -117,7 +125,8 @@ int grp_parse(const uint8_t *b, size_t len, struct grp *g)
         s->start_day = (int32_t)get32(p + 20), s->end_day = (int32_t)get32(p + 24);
         s->slots = get32(p + 28), s->k = get32(p + 32), s->nloc = get32(p + 36), s->pool_bytes = get64(p + 40);
         s->suspect_day = (int32_t)get32(p + 48), s->suspect_member = p[52], s->suspect_slot = get32(p + 56);
-        if (s->kind > GRP_SET_EMERGENCY || s->state > GRP_CLOSED || s->reason > GRP_R_ENDED ||
+        if (p[19] != 0 || !all_zero(p + 53, 3) || !all_zero(p + 60, 4) || s->kind > GRP_SET_EMERGENCY ||
+            s->state > GRP_CLOSED || s->reason > GRP_R_ENDED ||
             s->start_day > s->end_day || s->nloc > MAX_NLOC || s->pool_bytes > MAX_POOL || s->slots > 1000000 ||
             s->k > 100000 || (g->n >= 3 && s->slots && s->k == 0) || s->suspect_member >= g->n) {
             free(g->sets);
@@ -577,9 +586,10 @@ int recv_load(const struct grp *g, const struct grp_set *s, int from, struct rec
     size_t len = 0;
     errno = 0;
     uint8_t *b = read_file(path, 16 + bm + (uint64_t)MAX_NLOC * 16, &len);
+    int e = errno;
     free(path);
     if (!b)
-        return errno == ENOENT ? 0 : -1; /* nothing received yet */
+        return e == ENOENT ? 0 : -1; /* nothing received yet */
     int ok = len >= 16 && memcmp(b, MAGIC_RECV, 8) == 0 && get32(b + 8) == nloc;
     uint32_t nr = ok ? get32(b + 12) : 0;
     ok = ok && nr <= nloc && len == 16 + bm + (size_t)nr * 16;
@@ -683,6 +693,7 @@ int grp_lookup(struct grp *g, const uint8_t loc[GRP_LOC_LEN], int lookahead, str
                 continue;
             struct recv_state r;
             if (recv_load(g, s, o, &r, p.nloc) < 0) {
+                recv_free(&r);
                 pool_close(&p);
                 continue;
             }

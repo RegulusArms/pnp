@@ -106,6 +106,11 @@ int main(void)
     /* the same tags whatever the number of threads (PNP_TEST_THREADS, test builds) */
     size_t nf = 2000;
     uint8_t *fns = malloc(nf * USS_FN_LEN), *a = malloc(nf), *b = malloc(nf), *big = malloc(3 << 20);
+    if (!fns || !a || !b || !big) {
+        printf("FAIL threads: out of memory\n");
+        free(fns), free(a), free(b), free(big);
+        return fails + 1;
+    }
     for (size_t i = 0; i < nf * USS_FN_LEN; i++)
         fns[i] = (uint8_t)(i * 131 + 7);
     for (size_t i = 0; i < nf; i++)
@@ -114,10 +119,18 @@ int main(void)
         big[i] = (uint8_t)(i * 31);
     setenv("PNP_TEST_THREADS", "1", 1);
     struct uss_eval *e = uss_eval_new(fns, USS_FN_LEN, nf);
+    if (!e) {
+        printf("FAIL threads: out of memory\n");
+        return fails + 1;
+    }
     uss_eval_feed(e, big, 3 << 20);
     uss_eval_finish(e, a);
     setenv("PNP_TEST_THREADS", "7", 1);
     e = uss_eval_new(fns, USS_FN_LEN, nf);
+    if (!e) {
+        printf("FAIL threads: out of memory\n");
+        return fails + 1;
+    }
     uss_eval_feed(e, big, 1 << 20);
     uss_eval_feed(e, big + (1 << 20), 2 << 20);
     uss_eval_finish(e, b);

@@ -44,6 +44,24 @@ static uint32_t get32(const uint8_t *b)
     return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
 }
 
+/* appends a copy of a signature: the bytes are copied, stored and counted in one step (0, or -1 when out of room
+ * or memory), so every allocation is always reachable through k->nsig */
+static int add_sig(struct kill_notice *k, int signer, int kind, const uint8_t *data, size_t len)
+{
+    if (k->nsig >= GRP_MAX_MEMBERS)
+        return -1;
+    if (!k->sig && !(k->sig = calloc(GRP_MAX_MEMBERS, sizeof *k->sig))) /* room for every member, once */
+        return -1;
+    uint8_t *copy = malloc(len ? len : 1);
+    if (!copy)
+        return -1;
+    memcpy(copy, data, len);
+    k->sig[k->nsig].signer = signer, k->sig[k->nsig].kind = kind, k->sig[k->nsig].len = len;
+    k->sig[k->nsig].data = copy;
+    k->nsig++;
+    return 0;
+}
+
 int kill_parse(const uint8_t *b, size_t len, struct kill_notice *k)
 {
     memset(k, 0, sizeof *k);
@@ -65,21 +83,17 @@ int kill_parse(const uint8_t *b, size_t len, struct kill_notice *k)
     for (int i = 0; i < n; i++) {
         if (len - at < 6)
             goto bad;
-        struct kill_sig *s = &k->sig[k->nsig];
-        s->signer = b[at], s->kind = b[at + 1];
-        s->len = get32(b + at + 2);
+        int signer = b[at], kind = b[at + 1];
+        size_t slen = get32(b + at + 2);
         at += 6;
-        if ((s->kind != 1 && s->kind != 2) || s->len > len - at)
+        if ((kind != 1 && kind != 2) || slen > len - at)
             goto bad;
         for (int j = 0; j < k->nsig; j++)
-            if (k->sig[j].signer == s->signer)
+            if (k->sig[j].signer == signer)
                 goto bad; /* one signature per member */
-        s->data = malloc(s->len ? s->len : 1);
-        if (!s->data)
+        if (add_sig(k, signer, kind, b + at, slen) < 0)
             goto bad;
-        memcpy(s->data, b + at, s->len);
-        at += s->len;
-        k->nsig++;
+        at += slen;
     }
     if (at != len)
         goto bad;
@@ -93,6 +107,8 @@ void kill_free(struct kill_notice *k)
 {
     for (int i = 0; i < k->nsig; i++)
         free(k->sig[i].data);
+    free(k->sig);
+    k->sig = NULL;
     k->nsig = 0;
 }
 
@@ -250,43 +266,38 @@ static int store_notice(struct grp *g, const struct kill_notice *in)
         return -1;
     size_t len = 0;
     uint8_t *b = read_small(p, KILL_FILE_MAX, &len);
-    struct kill_notice have;
-    int changed = 0, ret = 0;
-    if (b && kill_parse(b, len, &have) == 0 && memcmp(have.group, in->group, GRP_ID_LEN) == 0 &&
-        have.frame_len == in->frame_len) {
-        for (int i = 0; i < in->nsig; i++) {
-            int known = 0;
-            for (int j = 0; j < have.nsig; j++)
-                known |= have.sig[j].signer == in->sig[i].signer;
-            if (!known && have.nsig < GRP_MAX_MEMBERS) {
-                struct kill_sig *s = &have.sig[have.nsig];
-                *s = in->sig[i];
-                s->data = malloc(s->len ? s->len : 1);
-                if (s->data) {
-                    memcpy(s->data, in->sig[i].data, s->len);
-                    have.nsig++;
-                    changed = 1;
-                }
+    /* the notice to keep: the one arriving (with its own copies of the signatures), plus any signatures the copy
+     * already stored has that it lacks */
+    struct kill_notice fresh, have;
+    memcpy(&fresh, in, sizeof fresh);
+    fresh.sig = NULL;
+    fresh.nsig = 0;
+    for (int i = 0; i < in->nsig; i++)
+        add_sig(&fresh, in->sig[i].signer, in->sig[i].kind, in->sig[i].data, in->sig[i].len);
+    int changed = 1, ret = 0;
+    if (b && kill_parse(b, len, &have) == 0) {
+        if (memcmp(have.group, in->group, GRP_ID_LEN) == 0 && have.frame_len == in->frame_len) {
+            for (int j = 0; j < have.nsig; j++) {
+                int known = 0;
+                for (int i = 0; i < fresh.nsig; i++)
+                    known |= fresh.sig[i].signer == have.sig[j].signer;
+                if (!known)
+                    add_sig(&fresh, have.sig[j].signer, have.sig[j].kind, have.sig[j].data, have.sig[j].len);
             }
+            changed = fresh.nsig > have.nsig; /* nothing new: leave the stored copy as it is */
         }
-    } else {
-        have = *in;
-        for (int i = 0; i < in->nsig; i++) {
-            have.sig[i].data = malloc(in->sig[i].len ? in->sig[i].len : 1);
-            if (have.sig[i].data)
-                memcpy(have.sig[i].data, in->sig[i].data, in->sig[i].len);
-        }
-        changed = 1;
+        kill_free(&have);
     }
+    struct kill_notice *keep = &fresh;
     free(b);
     if (changed) {
         size_t n;
-        uint8_t *out = serialise(&have, &n);
+        uint8_t *out = serialise(keep, &n);
         char err[256] = "";
         ret = out ? write_whole(g, p, out, n, err, sizeof err) : -1;
         free(out);
     }
-    kill_free(&have);
+    kill_free(keep);
     free(p);
     return ret;
 }
@@ -608,11 +619,15 @@ int kill_make(struct grp *g, int scope, int member, const uint8_t (*sets)[GRP_ID
     uint8_t *frame = serialise(&k, &flen); /* no signatures yet: the frame and a zero count */
     if (!frame)
         return -1;
-    int ok = sign_frame(g, frame, k.frame_len, &k.sig[0], err, errlen) == 0;
+    struct kill_sig mine = {0, 0, NULL, 0};
+    int ok = sign_frame(g, frame, k.frame_len, &mine, err, errlen) == 0 &&
+             add_sig(&k, mine.signer, mine.kind, mine.data, mine.len) == 0;
     free(frame);
-    if (!ok)
+    free(mine.data);
+    if (!ok) {
+        kill_free(&k);
         return -1;
-    k.nsig = 1;
+    }
     size_t n;
     uint8_t *b = serialise(&k, &n);
     ok = b && write_whole(g, out, b, n, err, errlen) == 0;
@@ -635,8 +650,11 @@ int kill_cosign(struct grp *g, const char *path, char *err, size_t errlen)
     size_t len = 0;
     uint8_t *b = read_small(path, KILL_FILE_MAX, &len);
     struct kill_notice k;
-    if (!b || kill_parse(b, len, &k) < 0 || memcmp(k.group, g->id, GRP_ID_LEN) != 0) {
+    int parsed = b && kill_parse(b, len, &k) == 0;
+    if (!parsed || memcmp(k.group, g->id, GRP_ID_LEN) != 0) {
         snprintf(err, errlen, "%s isn't a kill notice for this group", path);
+        if (parsed)
+            kill_free(&k);
         free(b);
         return -1;
     }
@@ -650,11 +668,18 @@ int kill_cosign(struct grp *g, const char *path, char *err, size_t errlen)
         snprintf(err, errlen, "a leave notice is the leaver's alone: there's nothing to add");
         goto out;
     }
+    if (k.nsig >= GRP_MAX_MEMBERS) {
+        snprintf(err, errlen, "this notice already carries every signature it can");
+        goto out;
+    }
     store_notice(g, &k);
     kill_process(g, NULL, NULL); /* check the signatures already there first, while their items are fresh */
-    if (sign_frame(g, b, k.frame_len, &k.sig[k.nsig], err, errlen) < 0)
+    struct kill_sig mine = {0, 0, NULL, 0};
+    int signed_ok = sign_frame(g, b, k.frame_len, &mine, err, errlen) == 0 &&
+                    add_sig(&k, mine.signer, mine.kind, mine.data, mine.len) == 0;
+    free(mine.data);
+    if (!signed_ok)
         goto out;
-    k.nsig++;
     size_t n;
     uint8_t *nb = serialise(&k, &n);
     if (nb && write_whole(g, path, nb, n, err, errlen) == 0) {

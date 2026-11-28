@@ -568,7 +568,7 @@ int uss_verify(struct grp *g, const uint8_t *sig, size_t siglen, uint64_t len, u
         goto out;
     }
     fns = secret_alloc(bytes);
-    tags = malloc(nf);
+    tags = calloc(nf ? nf : 1, 1);
     if (!fns || !tags || pread_all(fd, fns, bytes, USS_VERIFY_HDR + (uint64_t)slot * bytes) < 0) {
         snprintf(err, errlen, "%s: %s", path, errno ? strerror(errno) : "out of memory");
         goto out;

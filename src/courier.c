@@ -117,11 +117,16 @@ int cs_create(struct cstore *c, const char *path, int role, int owner, const uin
     memcpy(c->group, group, GRP_ID_LEN);
     c->gen = gen;
     c->end = CS_HDR_LEN;
-    if (c->capacity < CS_HDR_LEN || save_header(c) < 0)
+    if (c->capacity < CS_HDR_LEN) {
+        snprintf(err, errlen, "%s is too small to be a pnp stick", path);
+        cs_close(c);
+        return -1;
+    }
+    if (save_header(c) < 0)
         goto fail;
     return 0;
 fail:
-    snprintf(err, errlen, "%s: %s", path, errno ? strerror(errno) : "too small");
+    snprintf(err, errlen, "%s: %s", path, strerror(errno));
     cs_close(c);
     return -1;
 }
