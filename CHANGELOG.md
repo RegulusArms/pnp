@@ -2,6 +2,23 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.15
+
+- **Containers (format 003), now the default.** The ciphertext no longer has the file's length: it's a container
+  of random-looking bytes, by default the next power of two that holds the file (at least 1 MiB), with the
+  encrypted file at a random place inside it and noise from the hardware random sources everywhere else. Without
+  the key, it reveals only which size bucket the file falls in. The key holds where the file is (its range),
+  the integrity check's key, and the pad; the integrity check covers the range's place too, and the stored tag is
+  encrypted so it looks like the noise around it. Details in docs/format.md.
+- **`--size N`** chooses the container's size exactly (with K, M, G, T); the same size for every file hides even
+  the bucket.
+- **`--key-form padded`** makes the key as long as the container, so its size doesn't give the file's length away
+  either. The default short form is as long as the file plus 88 bytes. Decrypting tells them apart by itself.
+- **`--format 2`** still writes the older format (as long as the file plus 40 bytes, with a note that it doesn't
+  hide the length), for comparison. Decrypting reads formats 003, 002 and 001.
+- **Interactive mode:** the encrypt screen has Format, Container size and Key form rows.
+- `pnp --info` describes containers and range keys.
+
 ## 0.1.0-alpha.14
 
 - **Pairs and groups, crash safety:** when a seal or message reserves its pad, the pool's next locator and next

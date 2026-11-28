@@ -17,21 +17,34 @@ int pnp_hdr_parse(const uint8_t *b, size_t n, uint64_t size, struct pnp_hdr *h)
         n = (size_t)size; /* never read past what the file holds */
     if (n < HEADER_LEN)
         return PNP_HDR_NOT_PNP;
-    int ct1 = is(b, MAGIC_CT_V1), key1 = is(b, MAGIC_KEY_V1);
-    int keyp = is(b, MAGIC_KEY_P), sharep = is(b, MAGIC_SHARE_P);
-    if (ct1 || is(b, MAGIC_CT))
-        h->kind = PNP_H_CT;
-    else if (key1 || keyp || is(b, MAGIC_KEY))
-        h->kind = PNP_H_KEY;
-    else if (sharep || is(b, MAGIC_SHARE))
-        h->kind = PNP_H_SHARE;
-    else
+    static const struct {
+        const char *magic;
+        enum pnp_hdr_kind kind;
+        int version, prot;
+    } known[] = {
+        {MAGIC_CT, PNP_H_CT, 3, 0},           {MAGIC_KEY, PNP_H_KEY, 3, 0},
+        {MAGIC_SHARE, PNP_H_SHARE, 3, 0},     {MAGIC_KEY_P, PNP_H_KEY, 3, 1},
+        {MAGIC_SHARE_P, PNP_H_SHARE, 3, 1},   {MAGIC_CT_V2, PNP_H_CT, 2, 0},
+        {MAGIC_KEY_V2, PNP_H_KEY, 2, 0},      {MAGIC_SHARE_V2, PNP_H_SHARE, 2, 0},
+        {MAGIC_KEY_P_V2, PNP_H_KEY, 2, 1},    {MAGIC_SHARE_P_V2, PNP_H_SHARE, 2, 1},
+        {MAGIC_CT_V1, PNP_H_CT, 1, 0},        {MAGIC_KEY_V1, PNP_H_KEY, 1, 0},
+    };
+    size_t i = 0;
+    while (i < sizeof known / sizeof *known && !is(b, known[i].magic))
+        i++;
+    if (i == sizeof known / sizeof *known)
         return PNP_HDR_NOT_PNP;
+    h->kind = known[i].kind;
+    h->version = known[i].version;
+    h->prot = known[i].prot;
     memcpy(h->id, b + MAGIC_LEN, ID_LEN);
-    h->version = ct1 || key1 ? 1 : 2;
-    h->prot = keyp || sharep;
     h->len = HEADER_LEN;
-    uint64_t trailer = h->version == 1 ? 0 : h->kind == PNP_H_CT ? PNP_MAC_TAG_LEN : PNP_MAC_KEY_LEN;
+    /* what follows the body (002's tag) or must start it (the MAC key, 003's range prefix); 003's container has
+     * neither, but holds at least one range: a tag's 16 bytes */
+    uint64_t trailer = h->version == 1   ? 0
+                       : h->version == 3 ? (h->kind == PNP_H_CT ? PNP_MAC_TAG_LEN : PNP_RANGE_LEN)
+                       : h->kind == PNP_H_CT ? PNP_MAC_TAG_LEN
+                                             : PNP_MAC_KEY_LEN;
     if (h->kind == PNP_H_SHARE) {
         if (n < SHARE_HEADER_LEN)
             return PNP_HDR_BAD_SHARE;
@@ -50,6 +63,6 @@ int pnp_hdr_parse(const uint8_t *b, size_t n, uint64_t size, struct pnp_hdr *h)
     }
     if (size < h->len + trailer)
         return PNP_HDR_SHORT;
-    h->body = size - h->len - trailer;
+    h->body = size - h->len - (h->version == 3 && h->kind == PNP_H_CT ? 0 : trailer);
     return PNP_HDR_OK;
 }

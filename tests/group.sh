@@ -329,7 +329,11 @@ check '! PNP_TEST_COURIER_LIE=wrap gx --courier-check "$T/stick" 2>"$T/err" && g
 
 # ---- --info on today's keys
 printf 'k' >"$W/ki" && "$PNP" -q --shares 3 "$W/ki"
-check 'gx --info "$W/ki.pnp.key.2" >"$T/out" && grep -q "key share (format 002)" "$T/out" && grep -q "share 2 of 3" "$T/out"' \
+check 'gx --info "$W/ki.pnp.key.2" >"$T/out" && grep -q "key share (format 003) .* a range key with pad for 1 bytes" "$T/out" &&
+       grep -q "share 2 of 3" "$T/out" && gx --info "$W/ki.pnp" >"$T/out" &&
+       grep -q "ciphertext (format 003) .* a container of 1048576 bytes" "$T/out" &&
+       "$PNP" -q --format 2 -o "$W/ki2.pnp" "$W/ki" && gx --info "$W/ki2.pnp.key" >"$T/out" &&
+       grep -q "key (format 002) .* for 1 bytes" "$T/out"' \
     "--info works for every pnp key type (here a share), from its header alone"
 
 

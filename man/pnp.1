@@ -1,4 +1,4 @@
-.TH PNP 1 "2026-11-27" "pnp @VERSION@" "User Commands"
+.TH PNP 1 "2026-11-28" "pnp @VERSION@" "User Commands"
 .SH NAME
 pnp \- experimental information-theoretic cryptography and communications suite
 .SH SYNOPSIS
@@ -12,6 +12,12 @@ pnp \- experimental information-theoretic cryptography and communications suite
 .IR PATH ]...
 .RB [ \-\-shares
 .IR N ]
+.RB [ \-\-size
+.IR N ]
+.RB [ \-\-key\-form
+.BR short | padded ]
+.RB [ \-\-format
+.BR 2 | 3 ]
 .RB [ \-\-protect
 .RB [ \-\-kdf\-memory
 .IR MIB ]
@@ -95,6 +101,9 @@ writes the ciphertext
 .I FILE.pnp
 and the key
 .IR FILE.pnp.key .
+The ciphertext is a container of random-looking bytes, by default the next power of two that holds the file (at
+least 1 MiB), with the encrypted file at a random place inside it and random noise everywhere else; so it reveals
+only which size bucket the file falls in.
 Decrypting
 .I FILE.pnp
 with
@@ -122,7 +131,8 @@ hidden files, c chooses the code cylinder, r looks again for drives and keys, an
 For files to encrypt, it shows each output it will write before writing anything, and lets you choose where the
 key goes (a drive, or beside the file), whether to split it into shares (each to its own drive), and whether to
 lock it with a passphrase (typed, or made by
-.BR \-\-gen\-passphrase ).
+.BR \-\-gen\-passphrase ),
+the format, the container's size and the key form.
 For .pnp files, it shows which key or shares it will decrypt with. A ciphertext is matched to its key by their
 shared ID, so renamed files still match; a missing key or share is named and the file skipped.
 .PP
@@ -188,6 +198,29 @@ shares (2 to 16) instead of one key file:
 .IR FILE.pnp.key.1 " to " FILE.pnp.key.N .
 Shares 1 to N\-1 are fresh pads from the hardware sources and share N is the pad XOR all of them, so any N\-1
 shares reveal nothing about the key, and all N are needed to decrypt. Losing one share loses the file.
+.TP
+.BI \-\-size " N"
+The container's size in bytes, or with K, M, G or T (powers of 1024). Default: the next power of two that holds the
+file and its 16-byte tag, at least 1 MiB. The same size for every file hides even the bucket.
+.TP
+.BR \-\-key\-form " short|padded"
+.BR short " (default):"
+the key is as long as the file, plus 88 bytes.
+.BR padded :
+as long as the container, so the key's size doesn't give the file's length away either. The range's place and length
+are in the key, readable in a plain key, hidden in shares, and (computationally only) under
+.BR \-\-protect .
+Decrypting tells the two forms apart by itself.
+.TP
+.BR \-\-format " 2|3"
+.BR 3 " (default):"
+a container (see DESCRIPTION).
+.BR 2 :
+the older format, as long as the file plus 40 bytes, which doesn't hide the file's length; no
+.B \-\-size
+or
+.BR \-\-key\-form .
+Decrypting reads formats 3, 2 and 1 by itself.
 .TP
 .B \-\-protect
 Also lock the key (or each share) with a passphrase, asked for twice on the terminal. Decrypting sees that a key is

@@ -244,8 +244,8 @@ static void say(const char *fmt, ...)
 static void usage(FILE *f)
 {
     fprintf(f,
-            "usage: pnp [-f] [-q] [-o OUT] [--key-out PATH] [--shares N]\n"
-            "           [--protect [--kdf-memory MIB] [--passphrase-file FILE]] FILE\n"
+            "usage: pnp [-f] [-q] [-o OUT] [--key-out PATH] [--shares N] [--size N] [--key-form short|padded]\n"
+            "           [--format 2|3] [--protect [--kdf-memory MIB] [--passphrase-file FILE]] FILE\n"
             "                                    encrypt FILE to FILE.pnp and its key FILE.pnp.key\n"
             "       pnp -d [-f] [-q] [-k KEY]... [-o OUT] [--passphrase-file FILE] FILE.pnp\n"
             "                                    decrypt FILE.pnp with FILE.pnp.key (or its shares) to FILE\n"
@@ -268,6 +268,13 @@ static void usage(FILE *f)
             "      --key-out PATH  write the key straight into this folder (or to this file name) instead of\n"
             "                  beside the ciphertext; with --shares, once for all shares or once per share\n"
             "      --shares N  split the key into N shares (2-16), all of them needed to decrypt\n"
+            "      --size N    the container's size in bytes (K, M, G, T suffixes: powers of 1024); default the\n"
+            "                  next power of two that holds the file and its tag, at least 1 MiB\n"
+            "      --key-form short|padded  short (default): the key is as long as the file (+ 88 bytes);\n"
+            "                  padded: as long as the container, so its size doesn't give the file's length away\n"
+            "      --format 2|3  3 (default): the ciphertext is a container of random-looking bytes that hides\n"
+            "                  the file's length; 2: the older format, as long as the file + 40 bytes (no length\n"
+            "                  hiding; no --size or --key-form)\n"
             "      --protect   also encrypt the key (or each share) under a passphrase, so a stolen key file\n"
             "                  is slow to use. Computationally secure only: not part of pnp's P = NP guarantee\n"
             "      --kdf-memory MIB  memory each passphrase guess costs, for --protect (default %d, %d-%d)\n"
@@ -710,9 +717,242 @@ static int memory_short(const struct pnp_protect *p, long *avail)
     return *avail >= 0 && *avail < (long)pnp_protect_need_mib(p) ? -1 : 0;
 }
 
-int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs, int n_key_outs, int shares,
-                int force, int verbose, const struct protect_opts *po)
+/* ---- format 003: containers and ranges (docs/format.md)
+ * The ciphertext's data is a circle of n bytes. A range [offset, offset + length + 16) holds the file XOR its pad,
+ * then its tag XOR the tag pad; it may wrap past the end. Every other byte is noise from the hardware sources, so
+ * without a key the whole container is uniform. */
+
+static void put_le64(uint8_t *b, uint64_t v)
 {
+    for (int i = 0; i < 8; i++, v >>= 8)
+        b[i] = (uint8_t)v;
+}
+
+static uint64_t get_le64(const uint8_t *b)
+{
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; i--)
+        v = v << 8 | b[i];
+    return v;
+}
+
+/* The automatic container size for a file of len bytes: the next power of two that holds it and its tag, at least
+ * PNP_CONTAINER_MIN, so a container's size says only which bucket the file falls in. want (--size) overrides it.
+ * Returns 0, or -1 after saying why. */
+static int container_size(const char *path, uint64_t len, uint64_t want, uint64_t *n)
+{
+    uint64_t need = len + PNP_MAC_TAG_LEN;
+    if (want) {
+        if (want < need) {
+            say("--size %llu is too small for %s: it needs at least %llu bytes (the file and its 16-byte tag)",
+                (unsigned long long)want, path, (unsigned long long)need);
+            return -1;
+        }
+        *n = want;
+        return 0;
+    }
+    for (*n = PNP_CONTAINER_MIN; *n < need; *n <<= 1)
+        if (*n >= (uint64_t)1 << 62) {
+            say("%s is too large for an automatic container size (use --size)", path);
+            return -1;
+        }
+    return 0;
+}
+
+/* a uniform value below n from the sources: 8 random bytes, redrawn below 2^64 mod n (those would make some
+ * results likelier than others) */
+static int rng_below(struct pnp_rng *rng, uint64_t n, uint64_t *v, char *err, size_t errlen)
+{
+    uint64_t skip = -n % n;
+    uint8_t b[8];
+    do {
+        if (pnp_rng_fill(rng, b, sizeof b, err, errlen) < 0)
+            return -1;
+        *v = get_le64(b);
+    } while (*v < skip);
+    *v %= n;
+    explicit_bzero(b, sizeof b);
+    return 0;
+}
+
+/* n bytes for messages: "4 MiB" when it's a whole number of KiB/MiB/GiB/TiB, else "1234567 bytes" */
+static const char *human_size(uint64_t n, char buf[32])
+{
+    static const char *const unit[] = {"TiB", "GiB", "MiB", "KiB"};
+    for (int i = 0; i < 4; i++) {
+        uint64_t u = (uint64_t)1 << (10 * (4 - i));
+        if (n && n % u == 0) {
+            snprintf(buf, 32, "%llu %s", (unsigned long long)(n / u), unit[i]);
+            return buf;
+        }
+    }
+    snprintf(buf, 32, "%llu bytes", (unsigned long long)n);
+    return buf;
+}
+
+/* writes len bytes to a container's part file at data position *pos, going round the circle of n bytes (the file
+ * is positioned at the header + *pos on entry, and is left at the next position) */
+static int ct_put(int fd, uint64_t n, uint64_t *pos, const uint8_t *b, size_t len)
+{
+    while (len) {
+        size_t k = n - *pos < len ? (size_t)(n - *pos) : len;
+        if (pnp_write_all(fd, b, k) < 0)
+            return -1;
+        b += k, len -= k, *pos += k;
+        if (*pos == n && (*pos = 0, lseek(fd, HEADER_LEN, SEEK_SET) < 0))
+            return -1;
+    }
+    return 0;
+}
+
+/* reads len bytes of a container at data position *pos, going round the circle of n bytes */
+static int ct_get(int fd, uint64_t n, uint64_t *pos, uint8_t *b, size_t len)
+{
+    while (len) {
+        size_t k = n - *pos < len ? (size_t)(n - *pos) : len;
+        ssize_t r = pread(fd, b, k, (off_t)(HEADER_LEN + *pos));
+        if (r < 0 && errno == EINTR && !pnp_stop)
+            continue;
+        if (r <= 0)
+            return -1;
+        b += r, len -= (size_t)r, *pos += (uint64_t)r;
+        if (*pos == n)
+            *pos = 0;
+    }
+    return 0;
+}
+
+enum { ENC_OK, ENC_RNG, ENC_WRITE, ENC_SAID }; /* sources failed (err) / a write failed (*failed) / said why */
+
+/* The body of a format 003 encryption: a random offset, the range prefix into the key material, the file XOR its
+ * pad into the range, the encrypted tag after it, the padded form's extra key bytes, then noise round the rest of
+ * the circle. The key files and the container's part file already hold their headers. */
+static int encrypt_container(int in, const char *in_path, uint64_t len, uint64_t n, int padded, const uint8_t *id,
+                             struct pnp_out *ct, const char *ct_path, struct pnp_out *key, char *const *key_path,
+                             int nkeys, struct pnp_rng *rng, struct pnp_chacha20 *wrap, struct pnp_progress *prog,
+                             const char **failed, char *err, size_t errlen)
+{
+    uint8_t pre[PNP_RANGE_LEN], tagpad[PNP_MAC_TAG_LEN], tag[PNP_MAC_TAG_LEN];
+    struct pnp_mac mac;
+    uint64_t off, pos;
+    int ret = ENC_RNG;
+    memset(&mac, 0, sizeof mac);
+    /* the offset from the sources too: where a range sits must be as unpredictable as its contents */
+    if (rng_below(rng, n, &off, err, errlen) < 0)
+        goto out;
+    put_le64(pre, off);
+    put_le64(pre + 8, len);
+    do {
+        if (pnp_rng_fill(rng, pre + 16, PNP_MAC_KEY_LEN, err, errlen) < 0)
+            goto out;
+    } while (pnp_mac_key_fix(pre + 16) < 0);
+    if (pnp_rng_fill(rng, pre + 48, PNP_MAC_TAG_LEN, err, errlen) < 0)
+        goto out;
+    memcpy(tagpad, pre + 48, sizeof tagpad);
+    pnp_mac_init(&mac, pre + 16);
+    pnp_mac_feed(&mac, id, ID_LEN);
+    pnp_mac_feed(&mac, pre, 16); /* the range itself, so a key changed to point elsewhere fails the check */
+    if (write_key_material(key, key_path, nkeys, rng, wrap, pre, sizeof pre, failed, err, errlen) < 0) {
+        ret = *failed ? ENC_WRITE : ENC_RNG;
+        goto out;
+    }
+    pos = off;
+    if (lseek(ct->fd, (off_t)(HEADER_LEN + off), SEEK_SET) < 0) {
+        *failed = ct_path, ret = ENC_WRITE;
+        goto out;
+    }
+    pnp_progress_start(prog, "encrypting", in_path, n + (padded ? n - len : 0), !quiet);
+    for (uint64_t left = len; left;) {
+        ret = ENC_SAID;
+        if (pnp_stop)
+            goto out;
+        ssize_t r = read_some(in, buf_in, left < CHUNK ? (size_t)left : CHUNK);
+        if (r <= 0) {
+            if (r < 0 && !pnp_stop)
+                say("can't read %s: %s", in_path, strerror(errno));
+            else if (r == 0)
+                say("%s changed while pnp was reading it (it got shorter). Nothing was written.", in_path);
+            goto out;
+        }
+        pnp_mac_feed(&mac, buf_in, (size_t)r);
+        ret = ENC_RNG;
+        if (pnp_rng_fill(rng, buf_pad, (size_t)r, err, errlen) < 0)
+            goto out;
+        for (ssize_t i = 0; i < r; i++)
+            buf_out[i] = buf_in[i] ^ buf_pad[i];
+        if (ct_put(ct->fd, n, &pos, buf_out, (size_t)r) < 0) {
+            *failed = ct_path, ret = ENC_WRITE;
+            goto out;
+        }
+        if (write_key_material(key, key_path, nkeys, rng, wrap, buf_pad, (size_t)r, failed, err, errlen) < 0) {
+            ret = *failed ? ENC_WRITE : ENC_RNG;
+            goto out;
+        }
+        left -= (uint64_t)r;
+        pnp_progress_add(prog, (uint64_t)r);
+    }
+    if (read_some(in, buf_in, 1) != 0) {
+        say("%s changed while pnp was reading it (it got longer). Nothing was written.", in_path);
+        ret = ENC_SAID;
+        goto out;
+    }
+    pnp_mac_final(&mac, tag);
+    for (size_t i = 0; i < sizeof tag; i++)
+        tag[i] ^= tagpad[i];
+    if (ct_put(ct->fd, n, &pos, tag, sizeof tag) < 0) {
+        *failed = ct_path, ret = ENC_WRITE;
+        goto out;
+    }
+    pnp_progress_add(prog, sizeof tag);
+    /* the padded form: the key's pad runs on to n bytes with fresh random bytes, so its size doesn't give away the
+     * file's length (the range itself is in the key material) */
+    for (uint64_t left = padded ? n - len : 0; left;) {
+        size_t k = left < CHUNK ? (size_t)left : CHUNK;
+        ret = ENC_SAID;
+        if (pnp_stop)
+            goto out;
+        ret = ENC_RNG;
+        if (pnp_rng_fill(rng, buf_pad, k, err, errlen) < 0)
+            goto out;
+        if (write_key_material(key, key_path, nkeys, rng, wrap, buf_pad, k, failed, err, errlen) < 0) {
+            ret = *failed ? ENC_WRITE : ENC_RNG;
+            goto out;
+        }
+        left -= k;
+        pnp_progress_add(prog, k);
+    }
+    /* the rest of the circle: noise from the same sources as the pad (never getrandom alone: an unbounded attacker
+     * could tell a software generator's output from ciphertext, and so find the ranges) */
+    for (uint64_t left = n - len - PNP_MAC_TAG_LEN; left;) {
+        size_t k = left < CHUNK ? (size_t)left : CHUNK;
+        ret = ENC_SAID;
+        if (pnp_stop)
+            goto out;
+        ret = ENC_RNG;
+        if (pnp_rng_fill(rng, buf_out, k, err, errlen) < 0)
+            goto out;
+        if (ct_put(ct->fd, n, &pos, buf_out, k) < 0) {
+            *failed = ct_path, ret = ENC_WRITE;
+            goto out;
+        }
+        left -= k;
+        pnp_progress_add(prog, k);
+    }
+    ret = ENC_OK;
+out:
+    explicit_bzero(pre, sizeof pre);
+    explicit_bzero(tagpad, sizeof tagpad);
+    explicit_bzero(tag, sizeof tag);
+    explicit_bzero(&mac, sizeof mac);
+    return ret;
+}
+
+int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs, int n_key_outs, int shares,
+                int force, int verbose, const struct protect_opts *po, const struct format_opts *fo)
+{
+    int v3 = fo->version != 2;
+    uint64_t cn = 0; /* 003: the container's size */
+    char sizes[32];
     int nkeys = shares >= 2 && shares <= MAX_SHARES ? shares : 1; /* key files: the key, or its shares */
     if (shares && nkeys != shares) { /* callers check this; here so the arrays below can't overflow */
         say("--shares takes a number from 2 to %d", MAX_SHARES);
@@ -743,6 +983,8 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
 
     if (check_locked() < 0 || (in = open_input(in_path, &st)) < 0)
         goto out;
+    if (v3 && container_size(in_path, (uint64_t)st.st_size, fo->size, &cn) < 0)
+        goto out;
     if (out_opt ? asprintf(&ct_path, "%s", out_opt) < 0 : asprintf(&ct_path, "%s.pnp", in_path) < 0) {
         ct_path = NULL;
         say("out of memory");
@@ -759,7 +1001,10 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
     if (open_sources(&rng, verbose, "pad") < 0)
         goto out;
     if (po->on) {
-        if ((uint64_t)st.st_size + PNP_MAC_KEY_LEN > PNP_PROTECT_MAX_BYTES) {
+        /* the key material ChaCha20 encrypts: MAC key + pad (002), or the range prefix + the pad (003) */
+        uint64_t material = v3 ? PNP_RANGE_LEN + (fo->padded ? cn : (uint64_t)st.st_size)
+                               : (uint64_t)st.st_size + PNP_MAC_KEY_LEN;
+        if (material > PNP_PROTECT_MAX_BYTES) {
             say("--protect works for files up to 256 GiB");
             goto out;
         }
@@ -821,7 +1066,12 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
     }
     fence_in(all, nkeys + 1);
     for (int i = 0; i < nkeys; i++) {
-        memcpy(header, shares ? (po->on ? MAGIC_SHARE_P : MAGIC_SHARE) : po->on ? MAGIC_KEY_P : MAGIC_KEY, MAGIC_LEN);
+        if (v3)
+            memcpy(header, shares ? (po->on ? MAGIC_SHARE_P : MAGIC_SHARE) : po->on ? MAGIC_KEY_P : MAGIC_KEY,
+                   MAGIC_LEN);
+        else
+            memcpy(header, shares ? (po->on ? MAGIC_SHARE_P_V2 : MAGIC_SHARE_V2) : po->on ? MAGIC_KEY_P_V2 : MAGIC_KEY_V2,
+                   MAGIC_LEN);
         header[HEADER_LEN] = (uint8_t)(i + 1);
         header[HEADER_LEN + 1] = (uint8_t)nkeys;
         if (pnp_write_all(key[i].fd, header, shares ? SHARE_HEADER_LEN : HEADER_LEN) < 0 ||
@@ -830,10 +1080,22 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
             goto write_failed;
         }
     }
-    memcpy(header, MAGIC_CT, MAGIC_LEN);
+    memcpy(header, v3 ? MAGIC_CT : MAGIC_CT_V2, MAGIC_LEN);
     if (pnp_write_all(ct.fd, header, HEADER_LEN) < 0) {
         failed = ct_path;
         goto write_failed;
+    }
+    if (v3) {
+        switch (encrypt_container(in, in_path, (uint64_t)st.st_size, cn, fo->padded, header + MAGIC_LEN, &ct, ct_path,
+                                  key, key_path, nkeys, &rng, po->on ? wrap : NULL, &prog, &failed, err,
+                                  sizeof err)) {
+        case ENC_OK: break;
+        case ENC_RNG: goto rng_failed;
+        case ENC_WRITE: goto write_failed;
+        default: goto out;
+        }
+        pnp_progress_end(&prog);
+        goto place;
     }
     /* the integrity check's one-time key: fresh from the sources, first in the key's body (split like the pad) */
     do {
@@ -878,6 +1140,7 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
         failed = ct_path;
         goto write_failed;
     }
+place:
     /* With -f, the files being replaced are moved aside first, and deleted only once every new file is in place:
      * if anything below fails, discarding puts them back (fileio.c). So an old key is never lost. */
     if (force) {
@@ -909,12 +1172,17 @@ int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs,
     pnp_out_drop_old(&ct);
     for (int i = 0; i < nkeys; i++)
         pnp_out_drop_old(&key[i]);
+    char what[64] = "";
+    if (v3)
+        snprintf(what, sizeof what, " (a container of %s%s)", human_size(cn, sizes),
+                 fo->padded ? ", padded key" : "");
     if (!quiet && !shares) {
-        say("wrote %s and %s%s. Keep the key secret and apart from the .pnp file.", ct_path, key_path[0],
+        say("wrote %s%s and %s%s. Keep the key secret and apart from the .pnp file.", ct_path, what, key_path[0],
             po->on ? " (protected with the passphrase)" : "");
     } else if (!quiet) {
-        say("wrote %s, and its key as %d shares%s. All of them are needed to decrypt: keep them in different places.",
-            ct_path, nkeys, po->on ? " (each protected with the passphrase)" : "");
+        say("wrote %s%s, and its key as %d shares%s. All of them are needed to decrypt: keep them in different "
+            "places.",
+            ct_path, what, nkeys, po->on ? " (each protected with the passphrase)" : "");
         for (int i = 0; i < nkeys; i++)
         {
             char line[PATH_MAX];
@@ -964,9 +1232,10 @@ struct pnp_file {
     int fd;
     enum pnp_kind kind;
     uint8_t id[ID_LEN];
-    int version;    /* 1 (no integrity check) or 2 */
+    int version;    /* 1 (no integrity check), 2, or 3 (a container and range keys) */
     int num, count; /* a share: its number (1..count) and how many there are */
-    off_t body;     /* the length of the plaintext it's for: its size less its header, MAC key or tag */
+    off_t body;     /* 001/002: the plaintext's length; 003: a container's size, or a key's pad bytes */
+    off_t size;     /* the file's size when opened: 003 files are read by position, so a change is caught by this */
     int prot;       /* protected with a passphrase (--protect): pp holds its settings */
     struct pnp_protect pp;
 };
@@ -1018,6 +1287,7 @@ static int open_pnp_file(const char *path, enum pnp_kind want, struct pnp_file *
     f->num = h.num;
     f->count = h.count;
     f->body = (off_t)h.body;
+    f->size = st.st_size;
     f->prot = h.prot;
     f->pp = h.pp;
     return 0;
@@ -1038,8 +1308,9 @@ static int check_keys(const char *ct_path, const struct pnp_file *ct, char *cons
             return -1;
         }
     }
+    /* 003: a key's length depends on its range (checked once the range is read), but shares all match */
     for (int k = 0; k < nk; k++) {
-        if (kf[k].body != ct->body) {
+        if (kf[k].body != (ct->version == 3 ? kf[0].body : ct->body)) {
             say("%s and %s have different sizes: one of them is damaged or incomplete", ct_path, kp[k]);
             return -1;
         }
@@ -1136,7 +1407,7 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
     struct pnp_out out;
     struct pnp_mac mac;
     struct pnp_chacha20 wrap[MAX_SHARES];
-    uint8_t mackey[PNP_MAC_KEY_LEN] = {0}, tag[PNP_MAC_TAG_LEN], want[PNP_MAC_TAG_LEN];
+    uint8_t mackey[PNP_MAC_KEY_LEN] = {0}, tag[PNP_MAC_TAG_LEN], want[PNP_MAC_TAG_LEN], tagpad[PNP_MAC_TAG_LEN] = {0};
     char err[512];
     int ret = 1, nk = 0, find_shares = 0;
     struct stat st;
@@ -1235,24 +1506,49 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
     note_leftovers(dirs_to_check, ndc);
     if (unlock_keys(kp, kf, nk, passfile, wrap) < 0)
         goto out;
-    int checked = ct.version >= 2;
+    int checked = ct.version >= 2, v3 = ct.version == 3;
+    uint64_t cn = (uint64_t)ct.body, r_off = 0, r_len = (uint64_t)ct.body, pos = 0; /* 003: the range */
     if (checked) {
-        /* the MAC key: the start of the key's body, or of every share's, XORed together */
+        /* the start of the key material: the MAC key (002) or the range prefix (003), from the key's body or every
+         * share's XORed together */
+        uint8_t pre[PNP_RANGE_LEN];
+        size_t plen = v3 ? PNP_RANGE_LEN : PNP_MAC_KEY_LEN;
         for (int k = 0; k < nk; k++) {
-            if (read_some(kf[k].fd, k ? buf_share : mackey, sizeof mackey) != (ssize_t)sizeof mackey) {
+            if (read_some(kf[k].fd, k ? buf_share : pre, plen) != (ssize_t)plen) {
                 say("%s ended early or can't be read", kp[k]);
                 goto out;
             }
             if (kf[k].prot)
-                pnp_chacha20_xor(&wrap[k], k ? buf_share : mackey, sizeof mackey);
-            for (size_t i = 0; k && i < sizeof mackey; i++)
-                mackey[i] ^= buf_share[i];
+                pnp_chacha20_xor(&wrap[k], k ? buf_share : pre, plen);
+            for (size_t i = 0; k && i < plen; i++)
+                pre[i] ^= buf_share[i];
         }
-        if (pnp_mac_init(&mac, mackey) < 0) {
-            say("the key for %s is damaged (its integrity check key isn't valid)", ct_path);
+        memcpy(mackey, v3 ? pre + 16 : pre, sizeof mackey);
+        if (v3) {
+            r_off = get_le64(pre), r_len = get_le64(pre + 8);
+            memcpy(tagpad, pre + 48, sizeof tagpad);
+        }
+        /* the range must lie in the container (wrapping is fine), and the key hold its pad: exactly (short form)
+         * or as much as the container (padded form) */
+        int fits = !v3 || (r_off < cn && r_len <= cn - PNP_MAC_TAG_LEN);
+        int sized = !v3 || (uint64_t)kf[0].body == r_len || (uint64_t)kf[0].body == cn;
+        if (fits && !sized) {
+            say("%s is the wrong size for the range it opens in %s: it's damaged or incomplete", nk > 1 ? "the key's "
+                "shares are" : kp[0], ct_path);
+            explicit_bzero(pre, sizeof pre);
+            goto out;
+        }
+        if (!fits || pnp_mac_init(&mac, mackey) < 0) {
+            say("the key for %s is damaged (%s)", ct_path,
+                fits ? "its integrity check key isn't valid" : "the range it opens doesn't fit the ciphertext");
+            explicit_bzero(pre, sizeof pre);
             goto out;
         }
         pnp_mac_feed(&mac, ct.id, ID_LEN);
+        if (v3)
+            pnp_mac_feed(&mac, pre, 16); /* the range */
+        explicit_bzero(pre, sizeof pre);
+        pos = r_off;
     } else {
         say("note: %s is in pnp's old format (version 001, from pnp 0.1.0-alpha.2 or older), which has no integrity "
             "check: changes to it can't be detected",
@@ -1263,12 +1559,13 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
         goto out;
     }
     fence_in(&out_path, verify ? 0 : 1);
-    pnp_progress_start(&prog, verify ? "verifying" : "decrypting", ct_path, (uint64_t)ct.body, !quiet);
-    for (off_t left = ct.body; left > 0;) {
+    pnp_progress_start(&prog, verify ? "verifying" : "decrypting", ct_path, r_len, !quiet);
+    for (uint64_t left = r_len; left > 0;) {
         if (pnp_stop)
             goto out;
         size_t chunk = left < CHUNK ? (size_t)left : CHUNK;
-        ssize_t n = read_some(ct.fd, buf_in, chunk);
+        ssize_t n = v3 ? (ct_get(ct.fd, cn, &pos, buf_in, chunk) < 0 ? -1 : (ssize_t)chunk)
+                       : read_some(ct.fd, buf_in, chunk);
         if (n != (ssize_t)chunk) {
             if (!pnp_stop)
                 say(n < 0 ? "can't read %s" : "%s ended early or changed while pnp was reading it", ct_path);
@@ -1294,16 +1591,24 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
             say("can't write %s: %s", out_path, strerror(errno));
             goto out;
         }
-        left -= n;
+        left -= (uint64_t)n;
         pnp_progress_add(&prog, (uint64_t)n);
     }
     pnp_progress_end(&prog);
-    if (checked && read_some(ct.fd, want, sizeof want) != (ssize_t)sizeof want) {
+    if (checked && (v3 ? ct_get(ct.fd, cn, &pos, want, sizeof want)
+                       : read_some(ct.fd, want, sizeof want) != (ssize_t)sizeof want ? -1 : 0) < 0) {
         say("%s ended early or changed while pnp was reading it", ct_path);
         goto out;
     }
+    for (size_t i = 0; i < sizeof want; i++)
+        want[i] ^= tagpad[i]; /* 003's tag is stored encrypted; zeros otherwise */
+    /* nothing may have been added while pnp read: 001/002 files are read to their end; 003 files by position, a
+     * padded key only in part, so their sizes are compared instead */
     for (int k = -1; k < nk; k++) {
-        if (read_some(k < 0 ? ct.fd : kf[k].fd, buf_pad, 1) != 0) {
+        const struct pnp_file *f = k < 0 ? &ct : &kf[k];
+        struct stat now;
+        int same = v3 ? fstat(f->fd, &now) == 0 && now.st_size == f->size : read_some(f->fd, buf_pad, 1) == 0;
+        if (!same) {
             say("%s changed while pnp was reading it", k < 0 ? ct_path : kp[k]);
             goto out;
         }
@@ -1323,7 +1628,7 @@ int pnp_decrypt(const char *ct_path, char *const *key_opts, int n_key_opts, cons
             ;
         else if (checked)
             say("%s is whole: its key %s, its size and its integrity check are right (%lld bytes; nothing written)",
-                ct_path, nk > 1 ? "shares match it" : "matches it", (long long)ct.body);
+                ct_path, nk > 1 ? "shares match it" : "matches it", (long long)r_len);
         else
             say("%s matches its key and size, but it's in the old format without an integrity check, so its "
                 "contents can't be checked",
@@ -1347,6 +1652,7 @@ out:
     wipe_buffers();
     explicit_bzero(&mac, sizeof mac);
     explicit_bzero(mackey, sizeof mackey);
+    explicit_bzero(tagpad, sizeof tagpad);
     explicit_bzero(wrap, sizeof wrap);
     pnp_out_discard(&out);
     if (ct.fd >= 0)
@@ -1429,6 +1735,22 @@ void pnp_fuzz_init(void)
 }
 #endif
 
+/* --size: bytes, or with a K, M, G or T suffix (powers of 1024); from 16 (a tag alone) to 2^62 */
+static int parse_size(const char *s, uint64_t *v)
+{
+    char *end;
+    errno = 0;
+    unsigned long long n = strtoull(s, &end, 10);
+    int shift = !*end ? 0 : !end[1] ? (*end == 'K' || *end == 'k' ? 10 : *end == 'M' ? 20 : *end == 'G' ? 30 : *end == 'T' ? 40 : -1) : -1;
+    if (errno || end == s || *s == '-' || shift < 0 || n > ((unsigned long long)1 << 62) >> shift ||
+        (n << shift) < PNP_MAC_TAG_LEN) {
+        say("--size takes a number of bytes from 16 to 2^62, optionally with K, M, G or T (1024, 1024^2...)");
+        return -1;
+    }
+    *v = (uint64_t)n << shift;
+    return 0;
+}
+
 static int parse_int(const char *opt, const char *s, long lo, long hi, long *v)
 {
     char *end;
@@ -1443,7 +1765,8 @@ static int parse_int(const char *opt, const char *s, long lo, long hi, long *v)
 
 int main(int argc, char **argv)
 {
-    enum { OPT_SOURCES = 256, OPT_KEY_OUT, OPT_SHARES, OPT_PROTECT, OPT_KDF_MEMORY, OPT_PASSFILE, OPT_GEN, OPT_VERIFY, OPT_STRICT };
+    enum { OPT_SOURCES = 256, OPT_KEY_OUT, OPT_SHARES, OPT_PROTECT, OPT_KDF_MEMORY, OPT_PASSFILE, OPT_GEN, OPT_VERIFY, OPT_STRICT,
+           OPT_FORMAT, OPT_SIZE, OPT_KEY_FORM };
     static const struct option opts[] = {
         {"decrypt", no_argument, NULL, 'd'},         {"key", required_argument, NULL, 'k'},
         {"output", required_argument, NULL, 'o'},    {"force", no_argument, NULL, 'f'},
@@ -1454,11 +1777,14 @@ int main(int argc, char **argv)
         {"kdf-memory", required_argument, NULL, OPT_KDF_MEMORY},
         {"passphrase-file", required_argument, NULL, OPT_PASSFILE},
         {"gen-passphrase", optional_argument, NULL, OPT_GEN}, {"verify", no_argument, NULL, OPT_VERIFY},
-        {"strict", no_argument, NULL, OPT_STRICT},
+        {"strict", no_argument, NULL, OPT_STRICT},       {"format", required_argument, NULL, OPT_FORMAT},
+        {"size", required_argument, NULL, OPT_SIZE},     {"key-form", required_argument, NULL, OPT_KEY_FORM},
         {NULL, 0, NULL, 0},
     };
     int dec = 0, verify = 0, force = 0, verbose = 0, sources = 0, shares = 0, nkeys = 0, nkey_outs = 0, gen = 0, kdf_set = 0, c;
     struct protect_opts po = {0, PNP_PROTECT_MIB, NULL};
+    struct format_opts fo = {3, 0, 0};
+    int format_set = 0, v3_set = 0; /* --format given; --size or --key-form given (003 only) */
     long v;
     /* pairs and groups (seals, signatures, messages, kills, meetings): their own command line, gcli.c */
     if (argc > 1 && pnp_is_group_command(argv[1])) {
@@ -1502,6 +1828,23 @@ int main(int argc, char **argv)
             kdf_set = 1;
             break;
         case OPT_PASSFILE: po.passfile = optarg; break;
+        case OPT_FORMAT:
+            if (parse_int("--format", optarg, 2, 3, &v) < 0)
+                return 2;
+            fo.version = (int)v, format_set = 1;
+            break;
+        case OPT_SIZE:
+            if (parse_size(optarg, &fo.size) < 0)
+                return 2;
+            v3_set = 1;
+            break;
+        case OPT_KEY_FORM:
+            if (strcmp(optarg, "short") != 0 && strcmp(optarg, "padded") != 0) {
+                say("--key-form is short or padded");
+                return 2;
+            }
+            fo.padded = strcmp(optarg, "padded") == 0, v3_set = 1;
+            break;
         case OPT_GEN:
             if (parse_int("--gen-passphrase", optarg ? optarg : "7", 5, 20, &v) < 0)
                 return 2;
@@ -1574,11 +1917,18 @@ int main(int argc, char **argv)
         say("-k is for decrypting (to choose where the key is written, use --key-out)");
         return 2;
     }
-    if (dec && (nkey_outs || shares || po.on || kdf_set)) {
-        say("--key-out, --shares, --protect and --kdf-memory are for encrypting (decrypting finds out from the key "
-            "whether it's protected; to name the key or its shares, use -k)");
+    if (dec && (nkey_outs || shares || po.on || kdf_set || format_set || v3_set)) {
+        say("--key-out, --shares, --protect, --kdf-memory, --format, --size and --key-form are for encrypting "
+            "(decrypting finds out from the files which format and key form they are; to name the key or its "
+            "shares, use -k)");
         return 2;
     }
+    if (fo.version == 2 && v3_set) {
+        say("--size and --key-form are for containers (format 3); format 2 is always as long as the file");
+        return 2;
+    }
+    if (fo.version == 2 && !quiet)
+        say("note: format 2 doesn't hide the file's length (the ciphertext is as long as the file + 40 bytes)");
     if (!dec && !po.on && (kdf_set || po.passfile)) {
         say("--kdf-memory and --passphrase-file go with --protect");
         return 2;
@@ -1586,7 +1936,7 @@ int main(int argc, char **argv)
     sandbox_cli = 1;
     sandbox_say = verbose;
     int ret = dec ? pnp_decrypt(argv[optind], keys, nkeys, out_opt, force, po.passfile, verify)
-                  : pnp_encrypt(argv[optind], out_opt, key_outs, nkey_outs, shares, force, verbose, &po);
+                  : pnp_encrypt(argv[optind], out_opt, key_outs, nkey_outs, shares, force, verbose, &po, &fo);
     exit_for_signal();
     return ret;
 }

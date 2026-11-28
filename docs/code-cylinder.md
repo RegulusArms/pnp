@@ -1,6 +1,6 @@
 # Your code cylinder: a key drive you carry
 
-Without its key, a pnp ciphertext reveals nothing about the file but its length, however much computing power is
+Without its key, a pnp ciphertext reveals nothing about the file but its size bucket, however much computing power is
 used, even if P = NP (as long as the key is truly random, used once and kept secret). That strength has a price:
 **everything depends on who can physically get hold of your keys.** This guide shows how to set up a dedicated key
 drive (your "code cylinder"), encrypt it, carry it, and destroy keys when you need to.
@@ -306,7 +306,7 @@ follows different rules from ordinary keys:
 ## Summary
 
 - pnp's keys are its only secret, so how you store them is pnp's weakest link. Whoever has a key and its
-  ciphertext can read the file. Without the key, the ciphertext reveals nothing but its length.
+  ciphertext can read the file. Without the key, the ciphertext reveals nothing but its size bucket.
 - Keep keys on a dedicated external hard disk, encrypted with LUKS2 and ext4 inside, written straight there with
   `--key-out`. The encryption makes a lost or stolen drive expensive to use, never safe: physical custody comes
   first.

@@ -14,10 +14,17 @@ struct protect_opts {
     const char *passfile; /* NULL: ask on the terminal (or use the preset passphrase) */
 };
 
+/* the format written (--format, --size, --key-form) */
+struct format_opts {
+    int version;   /* 3 (a container: the default) or 2 (ciphertext as long as the file, + its tag) */
+    uint64_t size; /* 003: the container's size in bytes; 0 = automatic (a power of two, at least 1 MiB) */
+    int padded;    /* 003: keys padded to the length of a key for the whole container (--key-form padded) */
+};
+
 /* Encrypts in_path to out_opt (default in_path.pnp), with the key (or each share) at key_outs (folders or file
  * names; none: beside the ciphertext). The same as the command line. Returns 0, or 1 after saying why. */
 int pnp_encrypt(const char *in_path, const char *out_opt, char *const *key_outs, int n_key_outs, int shares,
-                int force, int verbose, const struct protect_opts *po);
+                int force, int verbose, const struct protect_opts *po, const struct format_opts *fo);
 /* Decrypts ct_path with the key files given (none: found beside it). With verify, does every check decrypting
  * does (headers, IDs, sizes, the integrity check) but writes nothing (--verify). Returns 0, or 1 or 2 after saying
  * why. */

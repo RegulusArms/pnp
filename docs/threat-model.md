@@ -26,7 +26,7 @@ the point of pnp. Everything below is about what they rest on.
 
 | Attacker | What they have | Why they lose |
 |---|---|---|
-| Someone who gets the ciphertext | The `.pnp` file: a stolen laptop or backup, cloud storage, a network capture | The pad is random, as long as the file and used once: the ciphertext is uniformly random to them. No computing power helps, now or after P = NP. |
+| Someone who gets the ciphertext | The `.pnp` file: a stolen laptop or backup, cloud storage, a network capture | The pad is random, as long as the file and used once, and the rest of the container is hardware noise: the whole container is uniformly random to them. They learn its size (the file's power-of-two bucket, or the `--size` chosen), nothing else. No computing power helps, now or after P = NP. |
 | Someone who changes the ciphertext | Write access to the `.pnp` file or the key | The one-time MAC: a change passes only by luck, about 2^-90 at worst. |
 | Someone with a stolen key file, under `--protect` | The key file, no passphrase | Each passphrase guess costs about 1 GiB of memory and seconds (Balloon and Argon2id). **Computationally secure only**: this slows them, it doesn't stop a state-level attacker, and it isn't part of the P = NP claim. |
 | A state, with a practical P = NP algorithm, holding a stolen locked key and its ciphertext | Both files, no passphrase | **Nothing in `--protect` or LUKS stops them for long.** They search the 256-bit ChaCha20 (or AES) key directly; a guess is checked with one cipher block against known bytes of the file, with no memory-hard hashing in it. The time depends only on how good the algorithm is ([chart](https://pnp.regulusarms.com/p-np.html)). Physical custody and shares are what keep them out. |
@@ -52,8 +52,10 @@ These aren't bugs: no file encryption program can stop them, and pnp doesn't pre
 - **Side channels on the same machine at the hardware level** beyond what pnp's constant-time code covers:
   power analysis, electromagnetic emanations, cold-boot attacks on RAM. See [constant-time.md](constant-time.md)
   for what is covered.
-- **Traffic analysis.** The ciphertext is exactly as long as the file (plus 40 bytes). If the length itself is
-  secret, pad the file before encrypting it.
+- **Traffic analysis, beyond the size bucket.** A container's size tells which power-of-two bucket the file falls
+  in (at least 1 MiB); `--size` with the same size for every file hides even that. When, how often and to whom
+  containers are sent isn't hidden. With `--format 2`, the ciphertext is exactly as long as the file (plus 40
+  bytes).
 - **A forged pnp package, if P = NP.** The apt repository's RSA signature, HTTPS and git's hashes are only
   computationally secure. The README's "Disclaimer: if P = NP, build from source" says how to avoid trusting
   them. [reproducible.md](reproducible.md) says how to check a published package against your own build.

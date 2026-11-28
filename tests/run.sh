@@ -37,18 +37,28 @@ fresh() { rm -rf "$T/w" && mkdir "$T/w"; }
 # --- the group signature's hash family and parameters (unit tests of src/uss.c)
 "$B/test_uss" || fails=$((fails + $?))
 
-# --- encrypt and decrypt
-for size in 0 1 65535 65536 65537 $((3 << 20 | 7)); do
+# --- encrypt and decrypt: format 3 (containers, the default) and format 2
+bucket() { local n=$((1 << 20)); while ((n < $1 + 16)); do n=$((n * 2)); done; echo $n; } # docs/format.md
+for size in 0 1 65535 65536 65537 $(((1 << 20) - 16)) $(((1 << 20) - 15)) $((3 << 20 | 7)); do
     fresh
     head -c "$size" /dev/urandom >"$T/w/f"
     cp "$T/w/f" "$T/w/orig"
-    check '"$PNP" -q "$T/w/f" && [[ -f "$T/w/f.pnp" && -f "$T/w/f.pnp.key" ]] &&
-           [[ $(stat -c %s "$T/w/f.pnp") == $((size + 40)) && $(stat -c %s "$T/w/f.pnp.key") == $((size + 56)) ]]' \
-        "encrypting a $size-byte file writes FILE.pnp (+ 24-byte header, 16-byte tag) and FILE.pnp.key (+ 24, 32-byte MAC key)"
+    check '"$PNP" -q "$T/w/f" && [[ -f "$T/w/f.pnp" && -f "$T/w/f.pnp.key" && $(head -c 8 "$T/w/f.pnp") == PNPCT003 ]] &&
+           [[ $(stat -c %s "$T/w/f.pnp") == $((24 + $(bucket "$size"))) && $(stat -c %s "$T/w/f.pnp.key") == $((size + 88)) ]]' \
+        "a $size-byte file: a container of the next power of two >= 1 MiB holding it and its tag (+ 24-byte header), and a key 88 bytes longer than the file (header, range, MAC key, tag pad)"
     check '"$B/xorcheck" "$T/w/orig" "$T/w/f.pnp" "$T/w/f.pnp.key"' \
-        "$size bytes: ciphertext XOR pad is the plaintext, the headers match and the MAC tag is right (checked independently)"
+        "$size bytes: the range in the container XOR the pad is the plaintext, the headers match and the encrypted MAC tag is right (checked independently)"
     rm "$T/w/f"
     check '"$PNP" -q -d "$T/w/f.pnp" && cmp -s "$T/w/f" "$T/w/orig"' "$size bytes: decrypting gives back the file"
+    case $size in 0 | 1 | 65535 | 65536 | 65537 | $((3 << 20 | 7))) ;; *) continue ;; esac
+    rm "$T/w/f" "$T/w/f.pnp" "$T/w/f.pnp.key" && cp "$T/w/orig" "$T/w/f"
+    check '"$PNP" -q --format 2 "$T/w/f" && [[ $(head -c 8 "$T/w/f.pnp") == PNPCT002 ]] &&
+           [[ $(stat -c %s "$T/w/f.pnp") == $((size + 40)) && $(stat -c %s "$T/w/f.pnp.key") == $((size + 56)) ]]' \
+        "--format 2, $size bytes: FILE.pnp (+ 24-byte header, 16-byte tag) and FILE.pnp.key (+ 24, 32-byte MAC key)"
+    check '"$B/xorcheck" "$T/w/orig" "$T/w/f.pnp" "$T/w/f.pnp.key"' \
+        "--format 2, $size bytes: ciphertext XOR pad is the plaintext and the MAC tag is right (checked independently)"
+    rm "$T/w/f"
+    check '"$PNP" -q -d "$T/w/f.pnp" && cmp -s "$T/w/f" "$T/w/orig"' "--format 2, $size bytes: decrypting gives back the file"
 done
 fresh
 yes 'the same line, over and over' | head -c 200000 >"$T/w/f"
@@ -111,6 +121,51 @@ check '[[ "$("$B/pnp" --version)" == "pnp $(cat VERSION)" ]]' "--version prints 
 check '! "$PNP" -q "$T/w" 2>"$T/err" && grep -q "regular file" "$T/err"' "a folder is refused"
 check '! "$PNP" -q "$T/w/missing" 2>/dev/null && no_parts' "a missing file is refused"
 
+# --- containers (format 3): --size, --key-form, --format, where the range goes
+fresh
+head -c 5000 /dev/urandom >"$T/w/f"
+check '"$PNP" -q --size 8K "$T/w/f" && [[ $(stat -c %s "$T/w/f.pnp") == $((24 + 8192)) ]] && "$B/xorcheck" "$T/w/f" "$T/w/f.pnp" "$T/w/f.pnp.key"' \
+    "--size 8K makes a container of exactly 8192 bytes"
+check '! "$PNP" -q --size 5015 -o "$T/w/s.pnp" "$T/w/f" 2>"$T/err" && grep -q "too small.*at least 5016" "$T/err" &&
+       [[ ! -e "$T/w/s.pnp" && ! -e "$T/w/s.pnp.key" ]] && no_parts' \
+    "--size too small for the file and its tag is refused, and nothing is written"
+"$PNP" -q --size 5016 -o "$T/w/x.pnp" "$T/w/f"
+check '[[ $(stat -c %s "$T/w/x.pnp") == 5040 ]] && "$B/xorcheck" "$T/w/f" "$T/w/x.pnp" "$T/w/x.pnp.key"' \
+    "--size exactly the file + its tag works (a container with no noise)"
+for bad in "--size 15" "--size 1X" "--size -5" "--size 4T1" "--key-form long" "--format 1" "--format 4" \
+    "--format 2 --size 1M" "--format 2 --key-form padded"; do
+    "$PNP" -q $bad -o "$T/w/bad.pnp" "$T/w/f" 2>/dev/null
+    check '[[ $? == 2 && ! -e "$T/w/bad.pnp" ]]' "$bad is a usage error"
+done
+"$PNP" -q -d --size 1M -o "$T/w/out" "$T/w/x.pnp" 2>/dev/null
+check '[[ $? == 2 ]]' "--size when decrypting is a usage error"
+check '"$PNP" --format 2 -o "$T/w/v2.pnp" "$T/w/f" 2>"$T/err" && grep -q "format 2 doesn.t hide the file.s length" "$T/err"' \
+    "--format 2 says that it doesn't hide the file's length"
+rm -f "$T/w/x.pnp"*
+check '"$PNP" -q --size 64K --key-form padded -o "$T/w/p.pnp" "$T/w/f" && [[ $(stat -c %s "$T/w/p.pnp.key") == $((24 + 64 + 65536)) ]] &&
+       "$B/xorcheck" "$T/w/f" "$T/w/p.pnp" "$T/w/p.pnp.key" && "$PNP" -q -d -o "$T/w/back" "$T/w/p.pnp" && cmp -s "$T/w/back" "$T/w/f"' \
+    "--key-form padded: the key is as long as a key for the whole container, and decrypts like a short one"
+rm -f "$T/w/back"
+check '"$PNP" -q --size 64K --key-form padded --shares 2 -o "$T/w/ps.pnp" "$T/w/f" &&
+       [[ $(stat -c %s "$T/w/ps.pnp.key.1") == $((26 + 64 + 65536)) && $(stat -c %s "$T/w/ps.pnp.key.2") == $((26 + 64 + 65536)) ]] &&
+       "$B/xorcheck" "$T/w/f" "$T/w/ps.pnp" "$T/w/ps.pnp.key.1" "$T/w/ps.pnp.key.2" && "$PNP" -q --verify "$T/w/ps.pnp"' \
+    "--key-form padded with --shares: every share is as long as the container's key"
+# where the range goes: random, and round the end of the circle when it gets there
+: >"$T/offsets" && wraps=0 && bad=0
+for i in $(seq 40); do
+    "$PNP" -q -f --size 5100 -o "$T/w/r.pnp" "$T/w/f" || bad=1
+    off=$(od -An -tu8 -j 24 -N8 "$T/w/r.pnp.key" | tr -d ' ') && echo "$off" >>"$T/offsets"
+    ((off + 5016 > 5100)) && wraps=$((wraps + 1))
+    "$B/xorcheck" "$T/w/f" "$T/w/r.pnp" "$T/w/r.pnp.key" && "$PNP" -q --verify "$T/w/r.pnp" || bad=1
+done
+check '((bad == 0 && wraps >= 1)) && [[ $(sort -u "$T/offsets" | wc -l) -ge 30 ]] && ! awk "\$1 >= 5100" "$T/offsets" | grep -q .' \
+    "the range's offset is random (40 encryptions, 30+ different offsets, all inside), and a range wrapping round the end decrypts"
+fresh
+head -c 100000 /dev/zero >"$T/w/z"
+"$PNP" -q "$T/w/z"
+check '[[ $(tail -c +25 "$T/w/z.pnp" | gzip -c | wc -c) -gt 1048576 ]]' \
+    "a container of an all-zero file doesn't compress: range and noise alike look random"
+
 # --- --key-out: the key goes straight to another folder or file name
 fresh
 mkdir "$T/w/usb" "$T/w/usb2"
@@ -158,8 +213,8 @@ check 'no_parts' "stopping it removes the parts in both folders"
 fresh
 yes 'the same line, over and over' | head -c 100000 >"$T/w/f"
 check '"$PNP" -q --shares 3 "$T/w/f" && [[ ! -e "$T/w/f.pnp.key" ]] &&
-       for i in 1 2 3; do [[ $(stat -c %s "$T/w/f.pnp.key.$i") == 100058 && $(stat -c %a "$T/w/f.pnp.key.$i") == 600 ]] || exit 1; done' \
-    "--shares 3 writes FILE.pnp.key.1, .2 and .3 (mode 600, each 26 + 32 bytes longer than the file) and no whole key"
+       for i in 1 2 3; do [[ $(stat -c %s "$T/w/f.pnp.key.$i") == 100090 && $(stat -c %a "$T/w/f.pnp.key.$i") == 600 ]] || exit 1; done' \
+    "--shares 3 writes FILE.pnp.key.1, .2 and .3 (mode 600, each 26 + 64 bytes longer than the file) and no whole key"
 check '"$B/xorcheck" "$T/w/f" "$T/w/f.pnp" "$T/w/f.pnp.key.1" "$T/w/f.pnp.key.2" "$T/w/f.pnp.key.3"' \
     "ciphertext XOR all three shares is the plaintext, and the share headers are right (checked independently)"
 check 'for i in 1 2 3; do [[ $(tail -c +27 "$T/w/f.pnp.key.$i" | gzip -c | wc -c) -gt 100000 ]] || exit 1; done &&
@@ -220,24 +275,59 @@ flip() { # flip one bit of byte $2 of file $1
 }
 fresh
 head -c 100000 /dev/urandom >"$T/w/f"
-"$PNP" -q "$T/w/f"
+"$PNP" -q --format 2 "$T/w/f" # format 2: fixed places (format 3's range is checked below)
 cp "$T/w/f.pnp" "$T/w/ct" && cp "$T/w/f.pnp.key" "$T/w/key" && mv "$T/w/f" "$T/w/orig"
 for where in "ciphertext 24" "ciphertext 50000" "ciphertext 100023" "ciphertext 100039" "key 30" "key 45" "key 56" "key 70000" "key 100055"; do
     set -- $where
     cp "$T/w/ct" "$T/w/f.pnp" && cp "$T/w/key" "$T/w/f.pnp.key"
     if [[ $1 == ciphertext ]]; then flip "$T/w/f.pnp" "$2"; else flip "$T/w/f.pnp.key" "$2"; fi
     check '! "$PNP" -q -d "$T/w/f.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" && [[ ! -e "$T/w/f" ]] && no_parts' \
-        "one flipped bit in the $1 at byte $2 is detected, and nothing is written"
+        "format 2: one flipped bit in the $1 at byte $2 is detected, and nothing is written"
 done
 cp "$T/w/ct" "$T/w/f.pnp" && cp "$T/w/key" "$T/w/f.pnp.key"
-check '"$PNP" -q -d "$T/w/f.pnp" && cmp -s "$T/w/f" "$T/w/orig"' "the unchanged files still decrypt (the check passes)"
+check '"$PNP" -q -d "$T/w/f.pnp" && cmp -s "$T/w/f" "$T/w/orig"' "format 2: the unchanged files still decrypt (the check passes)"
 rm "$T/w/f"
 printf x >>"$T/w/f.pnp" && printf y >>"$T/w/f.pnp.key"
 check '! "$PNP" -q -d "$T/w/f.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" && [[ ! -e "$T/w/f" ]]' \
-    "a byte appended to both files is detected"
+    "format 2: a byte appended to both files is detected"
 cp "$T/w/ct" "$T/w/f.pnp" && cp "$T/w/key" "$T/w/f.pnp.key"
 truncate -s 100039 "$T/w/f.pnp" && truncate -s 100055 "$T/w/f.pnp.key"
-check '! "$PNP" -q -d "$T/w/f.pnp" 2>/dev/null && [[ ! -e "$T/w/f" ]]' "both files cut short by a byte is detected"
+check '! "$PNP" -q -d "$T/w/f.pnp" 2>/dev/null && [[ ! -e "$T/w/f" ]]' "format 2: both files cut short by a byte is detected"
+# format 3: the range is found from a plain key (offset and length are the first 16 bytes of its material)
+rbyte() { # $1 key, $2 container, $3 byte i of the range (the file, then the tag): its place in the container file
+    local off n
+    off=$(od -An -tu8 -j 24 -N8 "$1" | tr -d ' ') && n=$(($(stat -c %s "$2") - 24))
+    echo $((24 + (off + $3) % n))
+}
+fresh
+head -c 100000 /dev/urandom >"$T/w/f"
+"$PNP" -q --size 150000 "$T/w/f"
+cp "$T/w/f.pnp" "$T/w/ct" && cp "$T/w/f.pnp.key" "$T/w/key" && mv "$T/w/f" "$T/w/orig"
+# key: 24 offset, 32 length, 40 k, 56 s, 72 tag pad, 88 the pad
+for where in "range 0" "range 50000" "range 99999" "tag 100000" "tag 100015" "key 24" "key 30" "key 32" "key 45" "key 60" \
+    "key 80" "key 87" "key 88" "key 70000" "key 100087"; do
+    set -- $where
+    cp "$T/w/ct" "$T/w/f.pnp" && cp "$T/w/key" "$T/w/f.pnp.key"
+    if [[ $1 == key ]]; then flip "$T/w/f.pnp.key" "$2"; else flip "$T/w/f.pnp" "$(rbyte "$T/w/key" "$T/w/ct" "$2")"; fi
+    check '! "$PNP" -q -d "$T/w/f.pnp" 2>"$T/err" && grep -q "integrity check failed\|damaged\|wrong size" "$T/err" &&
+           [[ ! -e "$T/w/f" ]] && no_parts' \
+        "format 3: one flipped bit in the $1 at byte $2 is detected, and nothing is written"
+done
+cp "$T/w/ct" "$T/w/f.pnp" && flip "$T/w/f.pnp" "$(rbyte "$T/w/key" "$T/w/ct" 7)"
+check '"$B/xorcheck" "$T/w/orig" "$T/w/ct" "$T/w/key" && ! "$B/xorcheck" "$T/w/orig" "$T/w/f.pnp" "$T/w/key" 2>/dev/null' \
+    "the independent check (xorcheck) passes the container, and fails it with one flipped bit in the range"
+cp "$T/w/ct" "$T/w/f.pnp" && cp "$T/w/key" "$T/w/f.pnp.key"
+flip "$T/w/f.pnp" "$(rbyte "$T/w/key" "$T/w/ct" 100016)" # the first byte after the tag: noise
+check '"$PNP" -q -d "$T/w/f.pnp" && cmp -s "$T/w/f" "$T/w/orig"' \
+    "format 3: a flipped bit in the noise outside the range changes nothing (it isn't part of the file)"
+rm -f "$T/w/f"
+cp "$T/w/key" "$T/w/f.pnp.key" && printf '\377\377\377\377\377\377\377\177' | dd of="$T/w/f.pnp.key" bs=1 seek=24 conv=notrunc status=none
+check '! "$PNP" -q -d "$T/w/f.pnp" 2>"$T/err" && grep -q "range it opens doesn.t fit" "$T/err" && [[ ! -e "$T/w/f" ]]' \
+    "format 3: a key whose range lies outside the container is refused"
+"$PNP" -q --size 150000 --key-form padded -o "$T/w/p.pnp" "$T/w/orig"
+printf x >>"$T/w/p.pnp"
+check '! "$PNP" -q -d -o "$T/w/out" "$T/w/p.pnp" 2>"$T/err" && grep -q "wrong size" "$T/err" && [[ ! -e "$T/w/out" ]]' \
+    "format 3: a padded key no longer as long as its container (a byte added) is refused"
 fresh
 head -c 70000 /dev/urandom >"$T/w/f"
 "$PNP" -q --shares 2 "$T/w/f"
@@ -262,10 +352,14 @@ printf 'wrong horse battery staple\n' >"$T/wrong"
 : >"$T/empty"
 P8=(--protect --kdf-memory 8 --passphrase-file "$T/pass")
 head -c 100000 /dev/zero >"$T/w/f" # zeros: the ciphertext's body is then the pad itself
-check '"$PNP" -q "${P8[@]}" "$T/w/f" && [[ $(head -c 8 "$T/w/f.pnp.key") == PNPKP002 &&
+check '"$PNP" -q --format 2 "${P8[@]}" "$T/w/f" && [[ $(head -c 8 "$T/w/f.pnp.key") == PNPKP002 &&
        $(stat -c %s "$T/w/f.pnp.key") == $((24 + 52 + 32 + 100000)) && $(stat -c %a "$T/w/f.pnp.key") == 600 &&
        $(stat -c %s "$T/w/f.pnp") == $((24 + 100000 + 16)) ]]' \
-    "--protect writes a PNPKP002 key (header, 52-byte protection block, key material) and an ordinary ciphertext"
+    "--protect --format 2 writes a PNPKP002 key (header, 52-byte protection block, key material) and an ordinary ciphertext"
+check '"$PNP" -q "${P8[@]}" -o "$T/w/c3.pnp" "$T/w/f" && [[ $(head -c 8 "$T/w/c3.pnp.key") == PNPKP003 &&
+       $(stat -c %s "$T/w/c3.pnp.key") == $((24 + 52 + 64 + 100000)) && $(head -c 8 "$T/w/c3.pnp") == PNPCT003 ]] &&
+       "$PNP" -q -d --passphrase-file "$T/pass" -o "$T/w/c3" "$T/w/c3.pnp" && cmp -s "$T/w/c3" "$T/w/f"' \
+    "--protect writes a PNPKP003 key (header, protection block, range prefix, pad) for a container, and it decrypts"
 check '! cmp -s <(tail -c +109 "$T/w/f.pnp.key") <(tail -c +25 "$T/w/f.pnp" | head -c 100000)' \
     "the protected key doesn't hold the pad as it is"
 mv "$T/w/f" "$T/w/orig"
@@ -314,10 +408,10 @@ check '! "$PNP" -q -d --protect "$T/w/f.pnp" 2>/dev/null && ! "$PNP" -q --kdf-me
 fresh
 head -c 70000 /dev/urandom >"$T/w/f" && cp "$T/w/f" "$T/w/orig"
 "$PNP" -q --shares 3 "${P8[@]}" "$T/w/f" && rm "$T/w/f"
-check '[[ $(head -c 8 "$T/w/f.pnp.key.1") == PNPSP002 && $(head -c 8 "$T/w/f.pnp.key.3") == PNPSP002 ]] &&
+check '[[ $(head -c 8 "$T/w/f.pnp.key.1") == PNPSP003 && $(head -c 8 "$T/w/f.pnp.key.3") == PNPSP003 ]] &&
        "$PNP" -d --passphrase-file "$T/pass" "$T/w/f.pnp" 2>"$T/err" && cmp -s "$T/w/f" "$T/w/orig" &&
        [[ $(grep -c "unlocking" "$T/err") == 1 ]]' \
-    "--protect with --shares protects every share (PNPSP002), and decrypting hashes the passphrase only once"
+    "--protect with --shares protects every share (PNPSP003), and decrypting hashes the passphrase only once"
 
 # --- --gen-passphrase
 check '[[ $(cut -f2 data/eff_large_wordlist.txt | sort -u | wc -l) == 7776 ]]' "the word list has 7776 different words"
@@ -338,8 +432,9 @@ tui() { # $1: the keys to press (printf format); the screen output goes to $T/tu
 rm -rf "$T/tw" "$T/media" && mkdir -p "$T/tw" "$T/media/KEYS" "$T/media/OTHER"
 echo "made in the interactive mode" >"$T/tw/a.txt" && cp "$T/tw/a.txt" "$T/a.orig"
 printf x >"$T/tw/$(printf 'n\033]0;pwned\007.txt')" # a file name with an escape sequence (sets the window title)
-# the list: .., a.txt, n...; j a.txt, Enter, then the rows key-goes-to, split, lock, [Encrypt]: jjj Enter
-tui 'j\rjjj\r\nq'
+# the list: .., a.txt, n...; j a.txt, Enter, then the rows key-goes-to, split, lock, format, container size,
+# key form, [Encrypt]: jjjjjj Enter
+tui 'j\rjjjjjj\r\nq'
 check '[[ -f "$T/tw/a.txt.pnp" && -f "$T/media/KEYS/a.txt.pnp.key" && ! -e "$T/tw/a.txt.pnp.key" ]] &&
        "$B/xorcheck" "$T/a.orig" "$T/tw/a.txt.pnp" "$T/media/KEYS/a.txt.pnp.key" && grep -q "Will write" "$T/tui.out"' \
     "interactive: Enter on a file shows what will be written, and encrypts it with its key on the code cylinder"
@@ -350,7 +445,7 @@ tui 'j\r\r\nq' # the list: .., a.txt.pnp, n...; Enter, [Decrypt]
 check 'cmp -s "$T/tw/a.txt" "$T/a.orig" && grep -q "media/KEYS/a.txt.pnp.key" "$T/tui.out"' \
     "interactive: Enter on a .pnp file shows the key it found on the code cylinder, and decrypts with it"
 rm "$T/tw/a.txt.pnp" "$T/media/KEYS/a.txt.pnp.key"
-tui 'j\rjljjjj\r\nq' # split: 2 shares (share 1 to the cylinder, share 2 to the other drive), [Encrypt]
+tui 'j\rjljjjjjjj\r\nq' # split: 2 shares (share 1 to the cylinder, share 2 to the other drive), [Encrypt]
 check '[[ -f "$T/media/KEYS/a.txt.pnp.key.1" && -f "$T/media/OTHER/a.txt.pnp.key.2" ]]' \
     "interactive: a key split into 2 shares goes to two different drives"
 rm "$T/tw/a.txt"
@@ -362,13 +457,26 @@ check 'grep -q "only 1 of 2 shares found" "$T/tui.out" && [[ ! -e "$T/tw/a.txt" 
     "interactive: with a drive unplugged it says which share is missing, and decrypts nothing"
 rm -f "$T/tw/a.txt.pnp" && cp "$T/a.orig" "$T/tw/a.txt"
 # lock on, generated passphrase, Words 7 -> 12, memory 1024 -> 256 MiB, [Encrypt]; Enter once it's written down
-tui 'j\rjj\rjjllllljhj\r\r\nq'
+tui 'j\rjj\rjjllllljhjjjj\r\r\nq'
 grep -a -A2 "Your passphrase" "$T/tui.out" | tail -1 | tr -d '\r' | sed 's/^ *//' >"$T/tuipass"
 check 'grep -q "Your passphrase (12 words from the EFF list, about 155 bits)" "$T/tui.out" &&
        [[ $(wc -w <"$T/tuipass") == 12 ]] && rm "$T/tw/a.txt" &&
        "$PNP" -q -d -k "$T/media/KEYS/a.txt.pnp.key" --passphrase-file "$T/tuipass" "$T/tw/a.txt.pnp" &&
        cmp -s "$T/tw/a.txt" "$T/a.orig"' \
     "interactive: a generated passphrase can be made longer (12 words), and it decrypts the locked key"
+rm -f "$T/tw/a.txt.pnp" "$T/media/KEYS/a.txt.pnp.key" && cp "$T/a.orig" "$T/tw/a.txt"
+tui 'j\rjjjlj\r\nq' # Format: 3 -> 2 (the size and key form rows go), [Encrypt]
+check '[[ $(head -c 8 "$T/tw/a.txt.pnp") == PNPCT002 ]] && "$B/xorcheck" "$T/a.orig" "$T/tw/a.txt.pnp" "$T/media/KEYS/a.txt.pnp.key"' \
+    "interactive: Format 2 writes the older format"
+rm -f "$T/tw/a.txt.pnp" "$T/media/KEYS/a.txt.pnp.key"
+tui 'j\rjjjjljlj\r\nq' # Container size: automatic -> 1 MiB; Key form: padded; [Encrypt]
+check '[[ $(head -c 8 "$T/tw/a.txt.pnp") == PNPCT003 && $(stat -c %s "$T/tw/a.txt.pnp") == $((24 + (1 << 20))) &&
+       $(stat -c %s "$T/media/KEYS/a.txt.pnp.key") == $((24 + 64 + (1 << 20))) ]] &&
+       "$B/xorcheck" "$T/a.orig" "$T/tw/a.txt.pnp" "$T/media/KEYS/a.txt.pnp.key"' \
+    "interactive: a 1 MiB container (chosen) with a padded key"
+rm "$T/tw/a.txt"
+tui 'j\r\r\nq'
+check 'cmp -s "$T/tw/a.txt" "$T/a.orig"' "interactive: and it decrypts"
 check '"$PNP" </dev/null >/dev/null 2>&1; [[ $? == 2 ]] &&
        (cd "$T/tw" && printf q | TERM=dumb script -qec "$PNP" "$T/tui.out" >/dev/null 2>&1; grep -q "usage: pnp" "$T/tui.out" && ! grep -q "1049h" "$T/tui.out")' \
     "pnp alone prints its usage when not in a terminal, or with TERM=dumb"
@@ -382,7 +490,7 @@ check '! "$PNP" -q -d -k "$T/w/b.pnp.key" -o "$T/w/out" "$T/w/a.pnp" 2>"$T/err" 
        [[ ! -e "$T/w/out" ]]' "another file's key (same size) is refused"
 cp "$T/w/a.pnp.key" "$T/w/short"
 truncate -s 900 "$T/w/short"
-check '! "$PNP" -q -d -k "$T/w/short" -o "$T/w/out" "$T/w/a.pnp" 2>"$T/err" && grep -q "different sizes" "$T/err" &&
+check '! "$PNP" -q -d -k "$T/w/short" -o "$T/w/out" "$T/w/a.pnp" 2>"$T/err" && grep -q "wrong size" "$T/err" &&
        [[ ! -e "$T/w/out" ]] && no_parts' "a truncated key is refused"
 check '! "$PNP" -q -d -k "$T/w/a.pnp" -o "$T/w/out" "$T/w/a.pnp" 2>"$T/err" && grep -q "is a pnp ciphertext, not a key" "$T/err"' \
     "a ciphertext given as the key is refused"
@@ -500,7 +608,7 @@ check 'PNP_TEST_VM=KVMKVMKVM "$PNP" -f "$T/w/f" 2>"$T/err" && grep -q "virtual m
 # PNP_TEST_FDS: on quitting, pnp-test lists what it still has open (pnp is non-dumpable, so /proc can't be read
 # from outside).
 rm -rf "$T/tw" "$T/media" && mkdir -p "$T/tw" "$T/media/KEYS" && echo x >"$T/tw/a.txt" && echo y >"$T/tw/b.txt"
-(cd "$T/tw" && printf 'j\rjjj\r\njj\rjjj\r\nq' |
+(cd "$T/tw" && printf 'j\rjjjjjj\r\njj\rjjjjjj\r\nq' |
     TERM=xterm PNP_TEST_MEDIA="$T/media" PNP_TEST_FDS="$T/fds" script -qec "$PNP" "$T/tui.out" >/dev/null 2>&1)
 check '[[ -f "$T/tw/a.txt.pnp" && -f "$T/tw/b.txt.pnp" && -s "$T/fds" ]] && ! grep -q "$T/rng" "$T/fds"' \
     "interactive: after encrypting two files, no random source is left open"
@@ -509,8 +617,8 @@ check '[[ -f "$T/tw/a.txt.pnp" && -f "$T/tw/b.txt.pnp" && -s "$T/fds" ]] && ! gr
 fresh
 head -c $((1 << 20)) /dev/urandom >"$T/w/f" && cp "$T/w/f" "$T/w/orig"
 (cd "$T/w" && TERM=xterm PNP_TEST_PROGRESS=1 script -qec "$PNP f" "$T/pty.out" >/dev/null 2>&1)
-check 'grep -q "encrypting f .*100%  1.0 MiB of 1.0 MiB" "$T/pty.out" && [[ -f "$T/w/f.pnp" ]]' \
-    "on a terminal, encrypting shows a progress line up to 100%"
+check 'grep -q "encrypting f .*100%  2.0 MiB of 2.0 MiB" "$T/pty.out" && [[ -f "$T/w/f.pnp" ]]' \
+    "on a terminal, encrypting shows a progress line up to 100% (over the whole container)"
 rm "$T/w/f"
 (cd "$T/w" && TERM=xterm PNP_TEST_PROGRESS=1 script -qec "$PNP -d f.pnp" "$T/pty.out" >/dev/null 2>&1)
 check 'grep -q "decrypting f.pnp .*100%" "$T/pty.out" && cmp -s "$T/w/f" "$T/w/orig"' \
@@ -538,7 +646,7 @@ rm -rf "$T/tw" "$T/media" "$T/state" && mkdir -p "$T/tw" "$T/media/KEYS"
 echo "for the key drive" >"$T/tw/b.txt"
 export PNP_TEST_UUIDS="$T/uuids"
 printf '%s uuid-AAAA\n' "$T/media/KEYS" >"$T/uuids"
-tui 'j\rjjj\r\nq' # encrypt b.txt with its key on KEYS
+tui 'j\rjjjjjj\r\nq' # encrypt b.txt with its key on KEYS
 check '[[ -e "$T/media/KEYS/b.txt.pnp.key" ]] && grep -q "^uuid-AAAA	KEYS$" "$T/state/pnp/drives" &&
        [[ $(stat -c %a "$T/state/pnp/drives") == 600 && $(stat -c %a "$T/state/pnp") == 700 ]]' \
     "interactive: the drive keys were written to is remembered by its UUID (private to the user)"
@@ -552,7 +660,7 @@ check '! grep -q "NOT the KEYS drive" "$T/tui.out" && grep -q "Code cylinder: .*
     "interactive: the remembered drive brings no warning"
 printf '%s uuid-BBBB\n' "$T/media/KEYS" >"$T/uuids"
 rm "$T/tw/b.txt.pnp" "$T/media/KEYS/b.txt.pnp.key"
-tui 'j\rjjj\r\nq' # keys written to the new drive on purpose: it's a second key drive now
+tui 'j\rjjjjjj\r\nq' # keys written to the new drive on purpose: it's a second key drive now
 tui 'q'
 check '! grep -q "NOT the KEYS drive" "$T/tui.out" && [[ $(grep -c KEYS "$T/state/pnp/drives") == 2 ]]' \
     "interactive: writing keys to the new drive anyway remembers it too (a backup key drive)"
@@ -566,9 +674,9 @@ check '"$PNP" --verify "$T/w/f.pnp" 2>"$T/err" && grep -q "is whole" "$T/err" &&
        [[ $(ls -A "$T/w" | wc -l) == 3 ]]' "--verify passes a whole ciphertext and writes nothing"
 check '"$PNP" -q --verify "$T/w/f.pnp" 2>"$T/err" && [[ ! -s "$T/err" ]]' "--verify -q answers with its exit status only"
 cp "$T/w/f.pnp" "$T/w/bad.pnp" && cp "$T/w/f.pnp.key" "$T/w/bad.pnp.key"
-flip "$T/w/bad.pnp" 5000
+flip "$T/w/bad.pnp" "$(rbyte "$T/w/bad.pnp.key" "$T/w/bad.pnp" 5000)"
 check '! "$PNP" --verify "$T/w/bad.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" && [[ ! -e "$T/w/bad" ]]' \
-    "--verify fails (exit 1) when one byte of the ciphertext changed"
+    "--verify fails (exit 1) when one byte of the file's range in the container changed"
 echo other >"$T/w/g" && "$PNP" -q "$T/w/g"
 check '! "$PNP" -q --verify -k "$T/w/g.pnp.key" "$T/w/f.pnp" 2>"$T/err" && grep -q "isn.t the key" "$T/err"' \
     "--verify fails with another encryption's key"

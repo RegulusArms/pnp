@@ -1,9 +1,59 @@
-# pnp file format (version 002)
+# pnp file format (versions 003 and 002)
 
 pnp writes two files: the ciphertext (`FILE.pnp`) and the key (`FILE.pnp.key`). With `--shares N`, the key is
 written as N share files instead (`FILE.pnp.key.1` … `FILE.pnp.key.N`, see [Key shares](#key-shares)). With
-`--protect`, the key or each share is locked with a passphrase (see [Protected keys](#protected-keys)). For a file
-of n bytes:
+`--protect`, the key or each share is locked with a passphrase (see [Protected keys](#protected-keys)).
+
+pnp writes **format 003** by default and **format 002** with `--format 2`. It decrypts 003, 002 and 001. Numbers are
+little-endian.
+
+## Version 003: containers and ranges
+
+The ciphertext is a **container**: a header, then n bytes that look uniformly random. The file sits in one
+**range** of them, at a random offset, and every other byte is random noise. The key opens that range.
+
+| Offset | Length | Container (`.pnp`)               | Offset | Length | Key (`.pnp.key`)                 |
+|-------:|-------:|----------------------------------|-------:|-------:|----------------------------------|
+| 0      | 8      | magic `PNPCT003` (ASCII)         | 0      | 8      | magic `PNPKY003` (ASCII)         |
+| 8      | 16     | ID                               | 8      | 16     | the same ID                      |
+| 24     | n      | the container's data (below)     | 24     | 8      | offset (LE64), 0 ≤ offset < n    |
+|        |        |                                  | 32     | 8      | length len (LE64), len + 16 ≤ n  |
+|        |        |                                  | 40     | 16     | MAC key k                        |
+|        |        |                                  | 56     | 16     | MAC key s                        |
+|        |        |                                  | 72     | 16     | tag pad                          |
+|        |        |                                  | 88     | len/n  | pad (short or padded form)       |
+
+- **The data is a circle.** Byte i of the range is data byte (offset + i) mod n, so a range may run past the end
+  and carry on from the start. The range is len + 16 bytes: the file XOR the pad, then the MAC tag XOR the tag pad.
+  Every data byte outside the range is **noise**, from the same hardware sources as the pad.
+- **The size n:** by default the next power of two that holds the file and its tag (len + 16), at least 1 MiB. So a
+  container's size tells only which bucket the file falls in: every file of 1 to 1 MiB − 16 bytes gives a 1 MiB
+  container, every file up to 2 MiB − 16 a 2 MiB one, and so on. `--size N` chooses n exactly (at least len + 16).
+- **The offset** is uniform on 0 … n − 1, from the hardware sources (8 random bytes, redrawn when below
+  2^64 mod n so no value is likelier than another).
+- **Why noise from the hardware sources:** without a key, every data byte is uniform, range or not. A software
+  generator's output can in principle be told apart from true randomness by an attacker with unlimited computing
+  power, which would show where the range is; so pnp never fills a container from `getrandom()` alone.
+- **The tag is stored encrypted.** A tag is below p = 2^127 − 1, so in clear the top bit of its last byte would
+  always be 0, unlike the noise around it. XORed with 16 random bytes, it's uniform too.
+- **The MAC** is the [integrity check](#the-integrity-check) below, over M = ID ‖ LE64 offset ‖ LE64 length ‖ the
+  file. The range is part of M, so a key changed to point elsewhere fails the check. Noise outside the range isn't
+  checked: it isn't part of the file.
+- **Key forms.** The **key material** is everything after the key's header: offset, length, k, s, tag pad, pad (the
+  first 64 bytes are the **range prefix**). A **short** key (the default, `--key-form short`) has len pad bytes. A
+  **padded** key (`--key-form padded`) has n: the pad, then fresh random bytes, so its size is that of a key for
+  the whole container and doesn't give the file's length away. Its offset and length are still readable in a plain
+  key; they're hidden in shares (each share's material is uniform) and, computationally only, under `--protect`.
+  pnp tells the forms apart by length: material of 64 + len bytes is short, 64 + n padded. Nothing else is valid.
+- Shares and `--protect` work on the key material exactly as in version 002: magics `PNPSH003`, `PNPKP003`,
+  `PNPSP003`, with the same share header and protection block.
+
+Decrypting checks, before writing anything: the IDs match; offset < n and len + 16 ≤ n; the key material is
+64 + len or 64 + n bytes (every share alike); then the tag. The output takes its real name only if the tag matches.
+
+## Version 002 (`--format 2`)
+
+The ciphertext is as long as the file plus 40 bytes, so it doesn't hide the file's length. For a file of n bytes:
 
 | Offset | Length | Ciphertext (`.pnp`)              | Offset | Length | Key (`.pnp.key`)                 |
 |-------:|-------:|----------------------------------|-------:|-------:|----------------------------------|
@@ -13,15 +63,20 @@ of n bytes:
 | 24 + n | 16     | MAC tag (little-endian)          | 40     | 16     | MAC key s (little-endian)        |
 |        |        |                                  | 56     | n      | pad                              |
 
+The key material is MAC key k, MAC key s, then the pad (32 + n bytes). The MAC is over M = ID ‖ plaintext, and
+the tag is stored in clear (harmless here: nothing is hidden around it).
+
+## Both versions
+
 - **ID:** 16 random bytes made for each encryption, the same in both files. Decrypting refuses a key whose ID
   doesn't match, so a key from another file can't silently produce garbage. The ID isn't secret, and it reveals
   nothing about the contents.
-- **Pad:** n bytes, each the XOR of every hardware source in use and the kernel's `getrandom()` (see
+- **Pad:** each byte the XOR of every hardware source in use and the kernel's `getrandom()` (see
   [src/rng.c](../src/rng.c)).
 - **MAC key and tag:** the integrity check (see [below](#the-integrity-check)). k and s are fresh random values from
-  the same sources as the pad, each below p = 2^127 − 1. The tag is public: it reveals nothing without s.
-- The trailing `002` in the magic is the format version. A later version that changes the layout gets a new number,
-  and older pnp versions refuse it instead of misreading it.
+  the same sources as the pad, each below p = 2^127 − 1.
+- The trailing `003` or `002` in the magic is the format version. A later version that changes the layout gets a
+  new number, and older pnp versions refuse it instead of misreading it.
 
 ## The integrity check
 
@@ -29,8 +84,9 @@ A one-time pad hides the contents but doesn't detect changes: flipping a bit in 
 in the decrypted file. HMAC or a hash would detect changes only *computationally*, which P = NP could break. So pnp
 uses a **one-time MAC** (Wegman–Carter), which is information-theoretically secure, like the pad itself.
 
-M is the ID followed by the plaintext (16 + n bytes). Cut M into 8-byte blocks m₁ … m_L, read as little-endian
-integers, with the last block padded with zero bytes. Then, with all arithmetic mod p = 2^127 − 1:
+M is, in version 003, the ID, the range's offset and length (LE64 each) and the file; in version 002, the ID and
+the plaintext. Cut M into 8-byte blocks m₁ … m_L, read as little-endian integers, with the last block padded with
+zero bytes. Then, with all arithmetic mod p = 2^127 − 1:
 
 ```
 acc = 0
@@ -45,25 +101,27 @@ That is, tag = m₁k^(L+1) + m₂k^L + … + m_Lk² + len(M)·k + s (mod p).
   ciphertext (or to the key's pad), the difference between the true and the changed tag is a nonzero polynomial in
   k of degree at most L + 1, so a change goes unnoticed with probability at most (L + 1) / p. That's about 2^-90 for
   a 1 TiB file, whatever computing power the attacker has.
-- **What it covers:** the decrypted plaintext. So it catches a changed or damaged ciphertext, a damaged tag, and
-  also a damaged key or share (a wrong pad gives the wrong plaintext, and a wrong k or s gives the wrong tag).
+- **What it covers:** the decrypted plaintext (and in version 003 the range's position). So it catches a changed
+  or damaged ciphertext, a damaged tag, and also a damaged key or share (a wrong pad gives the wrong plaintext, a
+  wrong k or s the wrong tag, a wrong offset or length the wrong M). A container's noise isn't covered: it isn't
+  part of the file, and changing it changes nothing that's decrypted.
 - **When it's checked:** pnp decrypts into a hidden temporary file and renames it into place only if the tag
   matches. If it doesn't, nothing is written.
 
 ## Key shares
 
-With `--shares N` (2 to 16), there is no single key file. Each share has a 26-byte header, then a body of 32 + n
-bytes:
+With `--shares N` (2 to 16), there is no single key file. Each share has a 26-byte header, then a body as long as
+the key material (version 003: 64 + len or 64 + n bytes; version 002: 32 + n):
 
 | Offset | Length | Share (`.pnp.key.1` … `.pnp.key.N`)                  |
 |-------:|-------:|------------------------------------------------------|
-| 0      | 8      | magic `PNPSH002` (ASCII)                             |
+| 0      | 8      | magic `PNPSH003` (`PNPSH002` in version 002)         |
 | 8      | 16     | the ciphertext's ID                                  |
 | 24     | 1      | this share's number, 1 to N                          |
 | 25     | 1      | N, the number of shares                              |
-| 26     | 32 + n | share body                                           |
+| 26     |        | share body                                           |
 
-- The **key material** is what a whole key holds after its header: MAC key k, MAC key s, then the pad (32 + n bytes).
+- The **key material** is what a whole key holds after its header (see each version above).
 - Shares 1 to N−1 are fresh random bytes from the same hardware sources. Share N is the key material XOR all of
   them. So the XOR of all N share bodies is the key material.
 - Any N−1 shares are uniformly random whatever the key is: they reveal nothing about it, however much computing
@@ -74,8 +132,8 @@ bytes:
 ## Protected keys
 
 With `--protect`, a key or share carries a 52-byte **protection block** after its header, and its body (the key
-material, or the share body) is encrypted. The magic says so: `PNPKP002` for a protected key, `PNPSP002` for a
-protected share. The ciphertext is unchanged.
+material, or the share body) is encrypted. The magic says so: `PNPKP003` for a protected key, `PNPSP003` for a
+protected share (`PNPKP002`, `PNPSP002` in version 002). The ciphertext is unchanged.
 
 | Offset (after the 24- or 26-byte header) | Length | Protection block                              |
 |-----------------------------------------:|-------:|-----------------------------------------------|
@@ -87,7 +145,7 @@ protected share. The ciphertext is unchanged.
 | 20                                       | 16     | salt (random for each encryption)             |
 | 36                                       | 16     | check value                                   |
 
-The body follows: the same 32 + n bytes as an unprotected key or share body, XORed with a ChaCha20 keystream.
+The body follows: the same bytes as an unprotected key or share body, XORed with a ChaCha20 keystream.
 
 ```
 b      = Balloon-BLAKE2b(passphrase, salt, space cost, rounds, delta = 3)   (64 bytes)
@@ -120,7 +178,8 @@ body   = (key material) XOR ChaCha20(key, nonce, block counter from 0)      (RFC
   2 passes and 16 MiB with 2 rounds by default (`--kdf-memory` sets the Argon2id memory; Balloon gets 1/64 of it,
   at most 16 MiB). Before hashing, it checks that much memory is free (`MemAvailable` in `/proc/meminfo`) and
   stops with a message if not, rather than swapping for hours.
-- ChaCha20 has a 32-bit block counter, so one keystream covers 256 GiB: `--protect` refuses larger files.
+- ChaCha20 has a 32-bit block counter, so one keystream covers 256 GiB: `--protect` refuses key material larger
+  than that.
 - **This layer is only computationally secure.** It makes a stolen key file expensive to use; it isn't part of
   the information-theoretic guarantee, which rests on the pad, the one-time MAC and the shares alone.
 
@@ -153,8 +212,8 @@ def balloon(pw, salt, s, t):
 
 def unwrap(data, passphrase):
     """a protected key or share file's bytes -> its key material (or share body), as if unprotected"""
-    share = data[:8] == b"PNPSP002"
-    assert share or data[:8] == b"PNPKP002"
+    share = data[:7] == b"PNPSP00"
+    assert share or data[:7] == b"PNPKP00"
     hdr = 26 if share else 24
     p = data[hdr:hdr + 52]
     blocks, rounds, kib, passes, lanes = (int.from_bytes(p[i:i + 4], "little") for i in (0, 4, 8, 12, 16))
@@ -297,18 +356,28 @@ def mac(k, s, msg):
     return (acc + s) % P
 
 ct = open("FILE.pnp", "rb").read()
-assert ct[:8] == b"PNPCT002"
 key = open("FILE.pnp.key", "rb").read()
-assert key[:8] == b"PNPKY002" and key[8:24] == ct[8:24]
+assert key[:7] == b"PNPKY00" and key[8:24] == ct[8:24]
 material = key[24:]
-# with shares instead of a key, replace the three lines above by these, XORing the share bodies (here three):
+# with shares instead of a key, replace the two lines above by these, XORing the share bodies (here three):
 #   shares = [open(f"FILE.pnp.key.{i}", "rb").read() for i in (1, 2, 3)]
-#   assert all(s[:8] == b"PNPSH002" and s[8:24] == ct[8:24] and s[25] == len(shares) for s in shares)
+#   assert all(s[:7] == b"PNPSH00" and s[8:24] == ct[8:24] and s[25] == len(shares) for s in shares)
 #   material = bytes(len(shares[0]) - 26)
 #   for s in shares:
 #       material = bytes(a ^ b for a, b in zip(material, s[26:]))
-k, s, pad = int.from_bytes(material[:16], "little"), int.from_bytes(material[16:32], "little"), material[32:]
-plain = bytes(a ^ b for a, b in zip(ct[24:-16], pad))
-assert mac(k, s, ct[8:24] + plain) == int.from_bytes(ct[-16:], "little"), "integrity check failed"
+if ct[:8] == b"PNPCT003":  # a container: the range prefix says where the file is
+    data, n = ct[24:], len(ct) - 24
+    off, length = int.from_bytes(material[:8], "little"), int.from_bytes(material[8:16], "little")
+    assert off < n and length + 16 <= n and len(material) - 64 in (length, n)
+    k, s = int.from_bytes(material[16:32], "little"), int.from_bytes(material[32:48], "little")
+    rng = bytes(data[(off + i) % n] for i in range(length + 16))
+    plain = bytes(a ^ b for a, b in zip(rng[:length], material[64:]))
+    tag = int.from_bytes(bytes(a ^ b for a, b in zip(rng[length:], material[48:64])), "little")
+    assert mac(k, s, ct[8:24] + material[:16] + plain) == tag, "integrity check failed"
+else:  # version 002
+    assert ct[:8] == b"PNPCT002"
+    k, s, pad = int.from_bytes(material[:16], "little"), int.from_bytes(material[16:32], "little"), material[32:]
+    plain = bytes(a ^ b for a, b in zip(ct[24:-16], pad))
+    assert mac(k, s, ct[8:24] + plain) == int.from_bytes(ct[-16:], "little"), "integrity check failed"
 open("FILE", "wb").write(plain)
 ```

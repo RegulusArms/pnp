@@ -14,8 +14,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     int r = pnp_hdr_parse(data, n, size, &h);
     if (r == PNP_HDR_OK) {
         /* what decrypting relies on: lengths that add up, counts in range, bounded hashing costs */
-        uint64_t trailer = h.version == 1 ? 0 : h.kind == PNP_H_CT ? PNP_MAC_TAG_LEN : PNP_MAC_KEY_LEN;
-        if (h.len > n || h.len + trailer + h.body != size)
+        /* 002: the tag after the body, or the MAC key before it; 003: a key's range prefix before its pad, and a
+         * container (no trailer) at least a tag long */
+        uint64_t trailer = h.version == 1   ? 0
+                           : h.version == 3 ? (h.kind == PNP_H_CT ? 0 : PNP_RANGE_LEN)
+                           : h.kind == PNP_H_CT ? PNP_MAC_TAG_LEN
+                                                : PNP_MAC_KEY_LEN;
+        if (h.len > n || h.len + trailer + h.body != size || (h.version == 3 && h.kind == PNP_H_CT && h.body < 16))
             abort();
         if (h.kind == PNP_H_SHARE && (h.count < 2 || h.count > MAX_SHARES || h.num < 1 || h.num > h.count))
             abort();

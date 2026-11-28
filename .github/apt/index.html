@@ -43,7 +43,7 @@
 <pre>pnp                      # browse your files and encrypt or decrypt them step by step
 pnp photo.jpg            # writes photo.jpg.pnp and its key photo.jpg.pnp.key
 pnp -d photo.jpg.pnp     # gives back photo.jpg</pre>
-  <p>Without the key, the encrypted file reveals nothing but its length; with it, anyone can read the file. So the weakest link is how you store your keys:
+  <p>Without the key, the encrypted file reveals nothing but its size bucket (a power of two, at least 1 MiB); with it, anyone can read the file. So the weakest link is how you store your keys:
   keep them offline and apart from the <code>.pnp</code> files.</p>
 
   <h2>Install</h2>

@@ -9,7 +9,7 @@ OUT="$(realpath -m "$2")"
 W="$(mktemp -d)"
 trap 'rm -rf "$W"' EXIT
 mkdir -p "$OUT"/{header,keys,passfile,verify,group,kill,courier}
-head -c $((1 << 20)) /dev/urandom >"$W/rng"
+head -c $((4 << 20)) /dev/urandom >"$W/rng"
 export PNP_TEST_HWRNG="$W/rng" PNP_TEST_NO_RDSEED=1 PNP_TEST_VM=
 printf 'pw\n' >"$W/pass"
 P8=(--protect --kdf-memory 8 --passphrase-file "$W/pass")
@@ -19,10 +19,19 @@ cd "$W"
 for size in 0 1 7 8 9 100 1000; do
     head -c "$size" /dev/urandom >"f$size"
 done
-"$PNP" -q f0 && "$PNP" -q f100 && "$PNP" -q --shares 3 f7 && "$PNP" -q "${P8[@]}" f9 &&
-    "$PNP" -q --shares 2 "${P8[@]}" f8 && "$PNP" -q --shares 16 f1000
-for f in f0.pnp f0.pnp.key f100.pnp f100.pnp.key f7.pnp f7.pnp.key.1 f9.pnp.key f8.pnp.key.2 f1000.pnp.key.16; do
+# format 3 containers, kept small with --size (the default is at least 1 MiB), in both key forms
+"$PNP" -q --size 16 f0 && "$PNP" -q --size 300 f100 && "$PNP" -q --size 23 --shares 3 f7 &&
+    "$PNP" -q --size 64 "${P8[@]}" f9 && "$PNP" -q --size 40 --key-form padded --shares 2 "${P8[@]}" f8 &&
+    "$PNP" -q --size 1100 --shares 16 f1000 && "$PNP" -q --size 200 --key-form padded -o p100.pnp f100
+for f in f0.pnp f0.pnp.key f100.pnp f100.pnp.key f7.pnp f7.pnp.key.1 f9.pnp.key f8.pnp.key.2 f1000.pnp.key.16 \
+    p100.pnp.key; do
     cp "$f" "$OUT/header/$f"
+done
+# format 2
+mkdir v2 && cp f0 f100 f7 f9 v2/ && (cd v2 && "$PNP" -q --format 2 f0 && "$PNP" -q --format 2 f100 &&
+    "$PNP" -q --format 2 --shares 3 f7 && "$PNP" -q --format 2 "${P8[@]}" f9)
+for f in f0.pnp f0.pnp.key f100.pnp f100.pnp.key f7.pnp.key.1 f9.pnp.key; do
+    cp "v2/$f" "$OUT/header/v2-$f"
 done
 # the old format (001): a ciphertext and key with no MAC
 printf 'PNPCT001%016d' 0 >"$OUT/header/v1.pnp" && printf 'abc' >>"$OUT/header/v1.pnp"
@@ -39,6 +48,16 @@ pack f7.pnp f7.pnp.key.3 f7.pnp.key.1 >"$OUT/verify/shares-missing"
 pack f9.pnp f9.pnp.key >"$OUT/verify/protected"
 pack f100.pnp f0.pnp.key >"$OUT/verify/mismatch"
 pack "$OUT/header/v1.pnp" "$OUT/header/v1.pnp.key" >"$OUT/verify/v1"
+pack p100.pnp p100.pnp.key >"$OUT/verify/padded"
+pack f8.pnp f8.pnp.key.1 f8.pnp.key.2 >"$OUT/verify/padded-shares-protected"
+pack v2/f100.pnp v2/f100.pnp.key >"$OUT/verify/v2-whole"
+pack v2/f7.pnp v2/f7.pnp.key.1 v2/f7.pnp.key.2 v2/f7.pnp.key.3 >"$OUT/verify/v2-shares"
+pack v2/f100.pnp f100.pnp.key >"$OUT/verify/v2-v3-mismatch"
+# a key whose range points past the container's end (offset = n), and one whose length overflows offset + length
+cp f100.pnp.key past.key && printf '\054\001\000\000\000\000\000\000' | dd of=past.key bs=1 seek=24 conv=notrunc status=none
+cp f100.pnp.key over.key && printf '\377\377\377\377\377\377\377\377' | dd of=over.key bs=1 seek=32 conv=notrunc status=none
+pack f100.pnp past.key >"$OUT/verify/range-past-end"
+pack f100.pnp over.key >"$OUT/verify/range-length-overflow"
 
 # keys: arrows (both forms), Page Up/Down, Home/End, a long number, a lone Esc, Ctrl-C, plain text
 printf '\033[A\033[B\033OC\033OD' >"$OUT/keys/arrows"

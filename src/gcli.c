@@ -1121,8 +1121,12 @@ static int cmd_info(const struct opts *o, const char *path)
             for (int i = 0; i < ID_LEN; i++)
                 snprintf(hex + 2 * i, 3, "%02x", ph.id[i]);
             static const char *const kind[] = {"?", "ciphertext", "key", "key share"};
-            out("pnp %s (format %03d) · ID %s · for %llu bytes of plaintext", kind[ph.kind], ph.version, hex,
-                (unsigned long long)ph.body);
+            if (ph.version == 3) /* a key's range is in its key material, which --info never reads */
+                out("pnp %s (format 003) · ID %s · %s %llu bytes", kind[ph.kind], hex,
+                    ph.kind == PNP_H_CT ? "a container of" : "a range key with pad for", (unsigned long long)ph.body);
+            else
+                out("pnp %s (format %03d) · ID %s · for %llu bytes of plaintext", kind[ph.kind], ph.version, hex,
+                    (unsigned long long)ph.body);
             if (ph.kind == PNP_H_SHARE)
                 out("  share %d of %d: all %d are needed to decrypt", ph.num, ph.count, ph.count);
             if (ph.kind != PNP_H_CT)

@@ -1070,19 +1070,26 @@ static int is_selected(const struct entry *e, int nsel, int i) { return nsel ? e
 static const uint32_t MEMS[] = {256, 1024, 4096, 16384, 51200};
 #define NMEMS 5
 
+/* container sizes offered (--size): 0 = automatic */
+static const uint64_t SIZES[] = {0, 1ull << 20, 4ull << 20, 16ull << 20, 64ull << 20, 256ull << 20, 1ull << 30,
+                                 4ull << 30, 16ull << 30, 64ull << 30};
+#define NSIZES 10
+
 static struct {
     int key_dest; /* -1: the code cylinder */
     int shares;   /* 0: one key file */
     int share_dest[MAX_SHARES];
     int lock, gen, words, mem, force;
-} ep = {-1, 0, {0}, 0, 1, 7, 1, 0};
+    int fmt2, size, padded; /* --format 2; --size (an index into SIZES); --key-form padded */
+} ep = {-1, 0, {0}, 0, 1, 7, 1, 0, 0, 0, 0};
 
 /* generated passphrases: the CLI's range (--gen-passphrase); each word is log2(7776) = 12.9 bits, so 10 words
  * match a 128-bit key and 20 the 256-bit ChaCha20 key the lock ends in (more would add nothing) */
 #define WORDS_MIN 5
 #define WORDS_MAX 20
 
-enum { R_KEYDEST, R_SHARES, R_SHAREDEST, R_LOCK, R_PASS, R_WORDS, R_MEM, R_FORCE, R_GO, R_BACK };
+enum { R_KEYDEST, R_SHARES, R_SHAREDEST, R_LOCK, R_PASS, R_WORDS, R_MEM, R_FORMAT, R_SIZE, R_KEYFORM, R_FORCE, R_GO,
+       R_BACK };
 
 static int run_encrypt(int nsel);
 
@@ -1103,7 +1110,7 @@ static void encrypt_screen(int nsel)
             conflicts += access(p, F_OK) == 0;
         }
         /* the rows: what can be changed, then the buttons */
-        int rt[9 + MAX_SHARES], ri[9 + MAX_SHARES], nr = 0;
+        int rt[12 + MAX_SHARES], ri[12 + MAX_SHARES], nr = 0;
         if (!ep.shares)
             rt[nr] = R_KEYDEST, ri[nr++] = 0;
         rt[nr] = R_SHARES, ri[nr++] = 0;
@@ -1115,6 +1122,11 @@ static void encrypt_screen(int nsel)
             if (ep.gen)
                 rt[nr] = R_WORDS, ri[nr++] = 0;
             rt[nr] = R_MEM, ri[nr++] = 0;
+        }
+        rt[nr] = R_FORMAT, ri[nr++] = 0;
+        if (!ep.fmt2) {
+            rt[nr] = R_SIZE, ri[nr++] = 0;
+            rt[nr] = R_KEYFORM, ri[nr++] = 0;
         }
         if (conflicts || ep.force)
             rt[nr] = R_FORCE, ri[nr++] = 0;
@@ -1174,6 +1186,24 @@ static void encrypt_screen(int nsel)
                     cellf(rev ? rev : c_red(), -1, "< %u MiB: more than the %ld MiB free now >", MEMS[ep.mem], avail);
                 else
                     cellf(rev, -1, "< %u MiB >", MEMS[ep.mem]);
+                break;
+            case R_FORMAT:
+                cell(NULL, "  Format              ", 22);
+                cell(rev, ep.fmt2 ? "< 2: as long as the file (doesn't hide its length) >"
+                                  : "< 3: a container that hides the file's length >", -1);
+                break;
+            case R_SIZE:
+                cell(NULL, "    Container size    ", 22);
+                if (!SIZES[ep.size])
+                    cell(rev, "< automatic: next power of two, at least 1 MiB >", -1);
+                else if (SIZES[ep.size] >= 1ull << 30)
+                    cellf(rev, -1, "< %llu GiB >", (unsigned long long)(SIZES[ep.size] >> 30));
+                else
+                    cellf(rev, -1, "< %llu MiB >", (unsigned long long)(SIZES[ep.size] >> 20));
+                break;
+            case R_KEYFORM:
+                cell(NULL, "    Key form          ", 22);
+                cell(rev, ep.padded ? "< padded: as long as the container >" : "< short: as long as the file >", -1);
                 break;
             case R_FORCE:
                 cell(NULL, "  Replace existing    ", 22);
@@ -1284,6 +1314,9 @@ static void encrypt_screen(int nsel)
                     ep.words = WORDS_MIN;
                 break;
             case R_MEM: ep.mem = (ep.mem + dir + NMEMS) % NMEMS; break;
+            case R_FORMAT: ep.fmt2 = !ep.fmt2; break;
+            case R_SIZE: ep.size = (ep.size + dir + NSIZES) % NSIZES; break;
+            case R_KEYFORM: ep.padded = !ep.padded; break;
             case R_FORCE: ep.force = !ep.force; break;
             }
         }
@@ -1320,6 +1353,7 @@ static int run_encrypt(int nsel)
         explicit_bzero(passbuf, PNP_PASS_MAX);
     }
     struct protect_opts po = {ep.lock, MEMS[ep.mem], NULL};
+    struct format_opts fo = {ep.fmt2 ? 2 : 3, ep.fmt2 ? 0 : SIZES[ep.size], !ep.fmt2 && ep.padded};
     for (int i = 0; i < nents && !pnp_stop; i++) {
         if (!is_selected(&ents[i], nsel, i))
             continue;
@@ -1336,7 +1370,7 @@ static int run_encrypt(int nsel)
         pnp_clean(shown);
         printf("--- %s\n", shown);
         fflush(stdout);
-        if (pnp_encrypt(ents[i].name, NULL, outs, nouts, ep.shares, ep.force, 0, &po) == 0) {
+        if (pnp_encrypt(ents[i].name, NULL, outs, nouts, ep.shares, ep.force, 0, &po, &fo) == 0) {
             ok++;
             /* the drives keys went to are remembered, so a different drive with the same name is noticed */
             for (int s = 0; s < ep.shares; s++)

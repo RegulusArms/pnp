@@ -18,6 +18,18 @@ young program into a hardened one.
 - [ ] **Entropy measurements on more machines,** especially Intel CPUs and a USB TRNG (docs/entropy.md has the
   method).
 
+## Containers, decoys and hidden files
+
+Containers (format 003) are in 0.1.0-alpha.15 ([docs/format.md](docs/format.md)). Still to come:
+
+- [ ] **Decoy keys (`--decoy`):** a second key, made later from the container alone, that opens a range of it to an
+  innocent file of your choice. Nothing in the bytes tells it from a real key, so nobody can prove another key
+  exists (deniability, not immunity: they can still disbelieve you).
+- [ ] **Hidden files (`--hide`):** more files in the same container at encryption time, each at a random place with
+  its own independent key. Whoever holds one key sees only random bytes where the others are.
+- [ ] **Padding for seals and messages in pairs and groups** (files only for now: a group's pool is finite, and
+  padding would use it up faster).
+
 ## Pairs and groups
 
 The first version is in 0.1.0-alpha.9 ([docs/group.md](docs/group.md)). Still to come:
