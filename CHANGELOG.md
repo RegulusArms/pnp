@@ -2,6 +2,17 @@
 
 What changed in each version of pnp, newest first.
 
+## 0.1.0-alpha.13
+
+- **Documentation brought up to date:**
+  - re-meetings (`pnp --meet ... --from GROUP-FOLDER`) are now described in docs/group.md, the man page and the
+    README, including how earlier generations are retired;
+  - group folder names after a re-meeting (`pnp-group-<ID>-g2`, ...) in docs/format.md and
+    docs/code-cylinder.md;
+  - `--courier-check` added to the README's options;
+  - docs/constant-time.md says its review predates pairs and groups, and TODO.md's audit item now includes the
+    group code.
+
 ## 0.1.0-alpha.12
 
 - **Tests:** three checks that damage a file to make sure the damage is caught now flip a bit instead of writing

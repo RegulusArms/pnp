@@ -176,7 +176,8 @@ The files of [group.md](group.md). Numbers are little-endian. Member numbers in 
 Every key file is 0600 in 0700 folders, and its modification and access times are reset to the group's fixed time
 after every write.
 
-**A group's folder** on a cylinder is `pnp-group-<group ID in hex>/`:
+**A group's folder** on a cylinder is `pnp-group-<group ID in hex>/`, or `pnp-group-<group ID in hex>-g<N>/` for
+generation N ≥ 2 (after a re-meeting):
 
 ```
 group                   the roster and settings (below), rewritten atomically

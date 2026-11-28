@@ -8,7 +8,7 @@
 [![C11, libc only](https://img.shields.io/badge/C11-libc%20only-A8B9CC?logo=c&logoColor=white)](#building-from-source)
 [![License: MIT](https://img.shields.io/github/license/RegulusArms/pnp)](LICENSE)
 
-**Version 0.1.0-alpha.12**: early alpha. See [Installing](#installing).
+**Version 0.1.0-alpha.13**: early alpha. See [Installing](#installing).
 
 **An experimental information-theoretic cryptography and communications suite, designed for a world beyond
 computational security.** For Debian, Ubuntu, Linux Mint and other Debian-based systems.
@@ -156,7 +156,7 @@ Type `pnp` on its own in a terminal and it opens a file browser for the folder y
    / __ \/ | / / __ \
   / /_/ /  |/ / /_/ /
  / ____/ /|  / ____/
-/_/   /_/ |_/_/          p = np. now what?   pnp 0.1.0-alpha.6
+/_/   /_/ |_/_/          p = np. now what?   pnp 0.1.0-alpha.13
 Folder:        /home/you/documents
 Code cylinder: /media/you/KEYS
 --------------------------------------------------------------------------------
@@ -255,7 +255,7 @@ pnp --import /dev/sdX1 /media/you/CYLINDER           # at home, alone
 
 **Limits:**
 - **Supplies:** the key material comes in key sets with agreed validity windows. Seals, signatures and pad run out,
-  and then you meet again.
+  and then you meet again (a re-meeting keeps the group and replaces its keys).
 - **Kill notices:** a stolen cylinder can be reported with a kill notice (two members kill, one only warns). Anyone
   can leave a group on their own.
 - **Who can check:** only the people at the meeting can check a seal or signature. It isn't a public signature.
@@ -284,7 +284,8 @@ pnp --import /dev/sdX1 /media/you/CYLINDER           # at home, alone
 | `--send FILE --to M[,M…]\|all [--sign]`, `--receive FILE.pnp` | Send an encrypted message to members, or receive one |
 | `--kill SCOPE`, `--kill-sign FILE`, `--leave` | Report keys compromised, confirm someone's report, or leave a group |
 | `--info [PATH]` | What's left in your groups and who can read what; or what a key, share, ciphertext or pnp drive is |
-| `--meet`, `--import SELF CYLINDER`, `--move KEYSET --to CYLINDER` | The meeting wizard, the import at home, moving a key set (to the vault) |
+| `--meet --self DEV --courier DEV [--from GROUP]`, `--import SELF CYLINDER`, `--move KEYSET --to CYLINDER` | The meeting wizard (with `--from`, the creator's re-meeting of an existing group), the import at home, moving a key set (to the vault) |
+| `--courier-check DEVICE` | Write a whole pnp drive and read it back, once per new drive |
 | `--groups FOLDER`, `--group NAME` | Where pnp looks for your groups (default: mounted drives), and which one to use |
 
 On a terminal, pnp shows a progress line for each file (and for `--protect`'s passphrase hashing): how far along

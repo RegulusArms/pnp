@@ -141,7 +141,8 @@ pnp finds your groups on mounted drives (`/media/$USER/*`); `--groups FOLDER` po
 In the interactive mode (`pnp` alone), the same actions are a key away:
 - `s` on a file seals, signs or sends it.
 - Enter on a seal, a signature or a message checks or receives it.
-- `p` opens your groups: info, kill notices, leaving, meetings and imports.
+- `p` opens your groups: meetings, imports, checking a new drive, and per group info, kill notices, leaving and
+  re-meetings.
 
 - **A message's header** is a one-time random locator. It names no group, pair or key set, and no two messages
   share one. File size and timing still show.
@@ -187,6 +188,27 @@ Windows are a group policy enforced by honest members' clocks. pnp has no networ
 - **What a leave or kill can't do:** it can't take back what others already received.
 - **Kill cards:** a kill card holds half of your emergency slots (the cylinder keeps the other half, so no slot is
   ever used twice). With it you can report a stolen cylinder without having the cylinder.
+
+## Meeting again
+
+When supplies run low, windows are ending, or members have left or been killed, the group meets again. The group
+keeps its ID; the new meeting is its next generation.
+
+- **The creator** starts it from their existing group folder, in the interactive mode (`p`, the group, "Re-meet")
+  or directly:
+
+  ```
+  pnp --meet --self /dev/sdX1 --courier /dev/sdY1 --from /media/you/CYLINDER/pnp-group-<ID>
+  ```
+
+  The wizard lists who stays (members who left or were removed are out) and asks how many people there are now;
+  newcomers are added after them. The group's name and whether it's anonymous carry over; periods, amounts and
+  the other settings are asked again.
+- **Everyone else** joins as at a first meeting.
+- **At home,** `pnp --import` writes the new generation to its own folder, `pnp-group-<ID>-g2` (`-g3`, …), and
+  retires the earlier ones on that cylinder: their key sets can still receive what's already on its way until
+  their windows close, but never send again, and their unused signing slots and pad are wiped at once. When you're
+  in both generations, pnp sends with the newest.
 
 ## Limits
 

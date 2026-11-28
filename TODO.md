@@ -9,8 +9,9 @@ young program into a hardened one.
 
 - [ ] **An independent security audit** of rng.c, mac.c, kdf.c/protect.c, fileio.c and tui.c's terminal handling,
   by someone who didn't write them, together with format.c (every header parsed), keys.c (terminal input) and
-  sandbox.c (the seccomp filter and Landlock rules). docs/threat-model.md and docs/constant-time.md are the
-  starting points.
+  sandbox.c (the seccomp filter and Landlock rules), and the pairs and groups code (uss.c, gmsg.c, meeting.c,
+  courier.c, kill.c, group.c), including a constant-time review of uss.c. docs/threat-model.md and
+  docs/constant-time.md are the starting points.
 - [ ] **Power-cut testing of the commit sequence.** Simulate a real power cut (dm-log-writes or dm-flakey, needs
   root), which would also check that the fsyncs are in the right places. Kills at every write are already
   tested.
@@ -28,6 +29,16 @@ The first version is in 0.1.0-alpha.9 ([docs/group.md](docs/group.md)). Still to
 - [ ] **Strict courier mode in the wizard:** one courier per pair, kept for good, for groups that won't rely on the
   overwritten-courier assumption.
 - [ ] **Telling a member who missed a re-meeting** that a newer generation exists, when something from it arrives.
+
+## Interactive mode
+
+- [ ] **Prepare drives from the interactive mode:** set up each kind of drive pnp uses without leaving it: a
+  code cylinder (a key drive, with LUKS2 encryption if wanted) and the raw pnp drives used by pairs and groups
+  (courier, self drive, kill card), followed by the capacity check. Today that takes `cryptsetup` and
+  `pnp-courier-setup` by hand. Erasing a drive needs root and pnp never runs as root, so the interactive mode
+  would hand that one step to a small, separately readable helper (asking for the password through `sudo` or
+  `pkexec`), with the same safeguards as now: external drives only, nothing mounted, the drive shown and ERASE
+  typed before anything is changed.
 
 ## Risky quality-of-life improvements
 

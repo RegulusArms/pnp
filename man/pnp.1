@@ -79,7 +79,9 @@ pnp \- experimental information-theoretic cryptography and communications suite
 .B pnp \-\-meet \-\-self
 .I DEVICE
 .B \-\-courier
-.IR DEVICE " | "
+.I DEVICE
+.RB [ \-\-from
+.IR GROUP\-FOLDER "] | "
 .B pnp \-\-import
 .I SELF CYLINDER
 .RB [ \-\-kill\-card
@@ -273,7 +275,8 @@ The interactive mode offers the same: in its file browser,
 .B s
 seals, signs or sends the file under the cursor, Enter checks a seal or signature or receives a message, and
 .B p
-lists your groups, runs meetings and imports, and per group shows info, makes kill notices and leaves.
+lists your groups, runs meetings and imports, checks a new drive, and per group shows info, makes kill notices,
+leaves and starts re-meetings.
 .TP
 .BI \-\-seal " FILE " \-\-to " MEMBER"
 Writes
@@ -330,8 +333,11 @@ What is left in your groups and who can read what; with
 .IR PATH ,
 what a key, share, ciphertext, group folder or pnp drive is (headers only).
 .TP
-.BI \-\-meet " \-\-self DEVICE \-\-courier DEVICE"
-The meeting wizard.
+.BI \-\-meet " \-\-self DEVICE \-\-courier DEVICE " [ "\-\-from GROUP\-FOLDER" ]
+The meeting wizard. With
+.BR \-\-from ,
+the creator starts a re-meeting of an existing group (its next generation); at import, earlier generations are
+retired: they still receive until their windows close, never send, and their unused sending keys are wiped.
 .TP
 .BI \-\-import " SELF CYLINDER " [ "\-\-kill\-card DEVICE" ]
 At home: makes the group folder, and optionally a kill card (half the emergency keys).

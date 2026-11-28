@@ -289,7 +289,8 @@ you're done with them.
 
 ## Groups on a code cylinder
 
-If you're in a pair or group ([group.md](group.md)), your cylinder also holds its folder, `pnp-group-<ID>`. It
+If you're in a pair or group ([group.md](group.md)), your cylinder also holds its folder, `pnp-group-<ID>` (`-g2`, `-g3`… after
+re-meetings). It
 follows different rules from ordinary keys:
 
 - **Never back it up, and never restore it.** A group's keys are used up as you go: every seal, signature and

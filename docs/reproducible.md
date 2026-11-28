@@ -17,10 +17,10 @@ You need Docker (or an Ubuntu 22.04 machine) and the package you want to check.
    `dev-latest` pre-release). It names the commit, the timestamp (`SOURCE_DATE_EPOCH`), the package version
    (`DEB_VERSION`) and the versions of the tools that built it:
    ```
-   Package: pnp_0.1.0~alpha.6_amd64.deb
+   Package: pnp_0.1.0~alpha.13_amd64.deb
    Source: https://github.com/RegulusArms/pnp commit 1a2b3c4...
    SOURCE_DATE_EPOCH: 1764100000
-   DEB_VERSION: 0.1.0~alpha.6
+   DEB_VERSION: 0.1.0~alpha.13
    ...
    ```
 2. **Get the source at that commit**, and read it (that's the point):
