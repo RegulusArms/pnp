@@ -138,7 +138,7 @@ check '! gx --receive "$W/m1.pnp" -o "$W/again" --groups "$G/g3/m2" >/dev/null 2
 gx --send "$W/m1" --to bob --groups "$G/g3/m1" -q -f
 check '! gx --receive "$W/m1.pnp" -o "$W/carol" --groups "$G/g3/m3" >/dev/null 2>&1 && [[ ! -e "$W/carol" ]]' \
     "a message for bob can't be read by carol"
-printf 'x' | dd of="$W/m1.pnp" bs=1 seek=30 conv=notrunc 2>/dev/null
+flip "$W/m1.pnp" 30
 check '! gx --receive "$W/m1.pnp" -o "$W/t1" --groups "$G/g3/m2" 2>"$T/err" && [[ ! -e "$W/t1" ]] && grep -q integrity "$T/err"' \
     "a changed message fails the integrity check and nothing is written"
 gx --send "$W/m20000" --to bob --sign --groups "$G/g3/m1" -q -f
@@ -210,11 +210,11 @@ check '! PNP_TEST_COURIER_LIE=drop gx --test-setup pair "$G/lie1" 2>"$T/err" && 
     "a courier that ignores writes is caught by the read-back and refused"
 check '! PNP_TEST_COURIER_LIE=wrap gx --test-setup pair "$G/lie2" 2>"$T/err" && grep -q "ignores writes or isn.t as big" "$T/err"' \
     "a courier that fakes its size (wraps around) is caught by the read-back"
-check 'gx --info "$G/p/self.1" >"$T/out" && grep -q "self stick of member 1" "$T/out" && grep -q "pool contribution" "$T/out"' \
+check 'gx --info "$G/p/self.1" >"$T/out" && grep -q "self drive of member 1" "$T/out" && grep -q "pool contribution" "$T/out"' \
     "--info on a self stick lists its records"
 check '! gx --import "$G/p/self.1" "$G/p/m1" 2>"$T/err" && grep -q "already exists" "$T/err"' \
     "a meeting can't be imported twice onto the same cylinder"
-cp --sparse=always "$G/p/self.1" "$T/self.bad" && printf 'Z' | dd of="$T/self.bad" bs=1 seek=300 conv=notrunc 2>/dev/null
+cp --sparse=always "$G/p/self.1" "$T/self.bad" && flip "$T/self.bad" 300
 mkdir -p "$G/imp"
 check '! gx --import "$T/self.bad" "$G/imp" 2>"$T/err" && grep -q damaged "$T/err" && ! ls "$G/imp" | grep -q .' \
     "a damaged record on a self stick is caught by its checksum, and nothing is imported"
@@ -324,5 +324,48 @@ check '! PNP_TEST_COURIER_LIE=wrap gx --courier-check "$T/stick" 2>"$T/err" && g
 printf 'k' >"$W/ki" && "$PNP" -q --shares 3 "$W/ki"
 check 'gx --info "$W/ki.pnp.key.2" >"$T/out" && grep -q "key share (format 002)" "$T/out" && grep -q "share 2 of 3" "$T/out"' \
     "--info works for every pnp key type (here a share), from its header alone"
+
+
+# ---- the interactive mode: the same actions from the file browser (s and p), driven through script(1)
+gtui() { # $1 folder, $2 media folder (stands in for /media/$USER), $3 keys; the screen goes to $T/gtui.out
+    (cd "$1" && printf "$3" | TERM=xterm PNP_TEST_MEDIA="$2" PNP_TEST_STICKS="$G/tuisticks" \
+        script -qec "$PNP" "$T/gtui.out" >/dev/null 2>&1)
+}
+I="$G/tui" && mkdir -p "$I/a/KEYS" "$I/b/KEYS" "$I/wa" "$I/wb" "$G/tuisticks"
+gx --test-setup pair "$I/p" 2>/dev/null
+mv "$I"/p/m1/pnp-group-* "$I/a/KEYS/" && mv "$I"/p/m2/pnp-group-* "$I/b/KEYS/"
+printf 'the lease\n' >"$I/wa/doc"
+gtui "$I/wa" "$I/a" 'js\r\r\nq' # the list: .., doc; s on doc: [Seal it], [bob]; Enter after; quit
+check '[[ -f "$I/wa/doc.pnp.seal" ]] && grep -q "sealed for bob" "$T/gtui.out"' \
+    "interactive: s on a file seals it for the other member of a pair"
+cp "$I/wa/doc" "$I/wa/doc.pnp.seal" "$I/wb/"
+gtui "$I/wb" "$I/b" 'jj\r\nq' # .., doc, doc.pnp.seal: Enter on the seal
+check 'grep -q "Sealed by alice. Only you and alice could have made this" "$T/gtui.out"' \
+    "interactive: Enter on a seal checks it"
+printf 'meet at noon\n' >"$I/wa/note"
+gx --send "$I/wa/note" --to bob --groups "$I/a/KEYS" -q -o "$I/wb/note.pnp"
+gtui "$I/wb" "$I/b" 'jjj\r\nq' # .., doc, doc.pnp.seal, note.pnp: Enter receives it
+check 'grep -q "From alice (deniable" "$T/gtui.out" && cmp -s "$I/wb/note" "$I/wa/note"' \
+    "interactive: Enter on a group message receives it"
+gtui "$I/wa" "$I/a" 'pj\rqqq' # no drives yet: the meeting can't start, and the groups screen says why
+check 'grep -q "No pnp drives found" "$T/gtui.out"' \
+    "interactive: a meeting with no pnp drives plugged in says so on the groups screen"
+truncate -s 64M "$G/tuisticks/s1"
+gtui "$I/wa" "$I/a" 'pj\rqqq' # p: the groups screen; the second item, Start or join a meeting: the stick list
+check 'grep -q "Pairs and groups" "$T/gtui.out" && grep -q "Pair \"test group\": 2 members, you are alice" "$T/gtui.out" &&
+       grep -q "blank pnp drive" "$T/gtui.out"' \
+    "interactive: p lists your groups, and a meeting starts by choosing among the pnp sticks plugged in"
+mkdir -p "$I/g/a/KEYS" "$I/g/b/KEYS" "$I/g/wa" "$I/g/wb"
+gx --test-setup group:3 "$I/g/s" 2>/dev/null
+mv "$I"/g/s/m1/pnp-group-* "$I/g/a/KEYS/" && mv "$I"/g/s/m2/pnp-group-* "$I/g/b/KEYS/"
+printf 'minutes\n' >"$I/g/wa/min"
+gtui "$I/g/wa" "$I/g/a" 'js\r\nq' # s on min: [Sign it]
+cp "$I/g/wa/min" "$I/g/wa/min.pnp.sig" "$I/g/wb/" 2>/dev/null
+gtui "$I/g/wb" "$I/g/b" 'jj\r\nq' # .., min, min.pnp.sig: Enter checks it
+check 'grep -q "Signed by alice, accepted at level 1." "$T/gtui.out"' \
+    "interactive: in a group, s signs a file, and Enter on the signature checks it for another member"
+gtui "$I/wa" "$I/a" 'p\rjj\rj\r\nqq' # p, the pair, Leave..., Yes
+check 'ls "$I"/wa/leave-*.pnp-kill >/dev/null 2>&1 && grep -q "end of this pair is written" "$T/gtui.out"' \
+    "interactive: leaving (ending a pair) from the groups screen writes the notice to send"
 
 export PNP_TEST_HWRNG="$T/rng"

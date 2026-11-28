@@ -18,7 +18,10 @@
  * formatted), in $XDG_STATE_HOME/pnp/drives (~/.local/state/pnp/drives), and warns when a drive with a known name
  * has a UUID it hasn't seen under that name. Writing keys to it anyway adds it (a second key drive, a backup). */
 #define _GNU_SOURCE
+#include "courier.h"
 #include "format.h"
+#include "gcli.h"
+#include "group.h"
 #include "keys.h"
 #include "pnp.h"
 #include "protect.h"
@@ -819,6 +822,18 @@ static void detail(const struct entry *e)
             cell(c_red(), "Key: not found here or on any drive: plug in your code cylinder, then r", -1);
         }
         endl();
+    } else if (ends_with(e->name, ".pnp.seal") || ends_with(e->name, ".pnp.sig") || ends_with(e->name, ".pnp-signed")) {
+        cell(NULL, ends_with(e->name, ".pnp.seal") ? "A seal. Enter: check it (who made it, and that the file is unchanged)"
+                                                   : "A group signature. Enter: check it", -1);
+        endl(), endl();
+    } else if (ends_with(e->name, ".pnp-kill")) {
+        cell(c_red(), "A kill notice: someone reports keys compromised. Enter: add your signature", -1);
+        endl(), endl();
+    } else if (ends_with(e->name, ".pnp") && e->h.kind == H_NONE && !e->dir) {
+        cell(NULL, "A group message (or not a pnp file). Enter: receive it with your groups' keys", -1);
+        endl();
+        cell(S_DIM, "s: seal, sign or send a file  p: pairs and groups", -1);
+        endl();
     } else if (e->h.kind == H_KEY || e->h.kind == H_SHARE) {
         cell(c_yellow(), "A pnp key. It belongs on your code cylinder, apart from its .pnp file.", -1);
         endl(), endl();
@@ -909,7 +924,8 @@ static void draw_browser(void)
     else if (nsel)
         cellf(S_BOLD, -1, "%d selected: Enter to continue, Esc to clear", nsel);
     endl();
-    cell(S_DIM, "Space select  Enter go  Bksp up  c code cylinder  r rescan  . hidden  q quit", -1);
+    cell(S_DIM, "Space select  Enter go  Bksp up  c code cylinder  s seal/sign/send  p pairs & groups  r rescan  q quit",
+         -1);
     end_screen();
 }
 
@@ -1506,11 +1522,445 @@ done:
 /* ---------------------------------------------------------------- the main loop */
 
 /* Enter in the file list: open a folder, or encrypt or decrypt the selection (or the highlighted file) */
+/* ---------------------------------------------------------------- pairs and groups
+ * The interactive mode's side of docs/group.md. Every action here runs the very same command as the command line
+ * (gcli.c, through pnp_group_cli), outside the full-screen view, so its checks and messages are identical. */
+
+struct gitem {
+    char dir[PATH_MAX];
+    char label[256];
+    int n;
+};
+static struct gitem *glist;
+static int ngroups;
+static char gall[8192]; /* every group folder, colon-separated: for checking and receiving */
+
+static void scan_groups(void)
+{
+    free(glist);
+    glist = NULL, ngroups = 0, gall[0] = 0;
+    char *dirs[64];
+    int n = grp_find_all(NULL, dirs, 64);
+    for (int i = 1; i < ndest && n < 64; i++) /* the code cylinders and typed folders too */
+        n += grp_find_all(dest[i].path, dirs + n, 64 - n);
+    glist = calloc(n ? (size_t)n : 1, sizeof *glist);
+    for (int i = 0; glist && i < n; i++) {
+        int dup = 0;
+        for (int j = 0; j < ngroups; j++)
+            dup |= strcmp(glist[j].dir, dirs[i]) == 0;
+        struct grp g;
+        char err[256], who[48];
+        if (!dup && grp_load(dirs[i], &g, err, sizeof err) == 0) {
+            struct gitem *it = &glist[ngroups++];
+            snprintf(it->dir, sizeof it->dir, "%s", dirs[i]);
+            it->n = g.n;
+            struct grp_set *cur_set = grp_current_set(&g, grp_today(g.tz_min));
+            snprintf(it->label, sizeof it->label, "%s \"%s\"%s: %d members, you are %s%s%s",
+                     g.n == 2 ? "Pair" : "Group", g.anon ? "anonymous" : g.name, g.gen > 1 ? " (re-met)" : "", g.n,
+                     grp_member_name(&g, g.me, who, sizeof who),
+                     grp_bit(g.left, g.me) || grp_bit(g.expelled, g.me) ? ", no longer a member" : "",
+                     cur_set ? "" : ", no key set valid today");
+            pnp_clean(it->label);
+            size_t l = strlen(gall);
+            snprintf(gall + l, sizeof gall - l, "%s%s", l ? ":" : "", dirs[i]);
+            grp_free(&g);
+        }
+        free(dirs[i]);
+    }
+}
+
+/* a full-screen list to choose from, starting at *pos (kept there on return): the index chosen, or -1 (Esc). A
+ * status message set by what the last choice ran (say, no drives plugged in) shows above the keys until the next
+ * key, so a choice that couldn't go ahead says why instead of seeming to do nothing. */
+static int menu_at(const char *title, const char *intro, const char *const *items, int n, int *pos_io)
+{
+    int pos = *pos_io >= 0 && *pos_io < n ? *pos_io : 0;
+    for (;;) {
+        begin_screen();
+        header(title);
+        if (intro) {
+            cell(NULL, intro, -1);
+            endl();
+        }
+        rule();
+        for (int i = 0; i < n; i++) {
+            cell(i == pos ? S_REV : NULL, items[i], -1);
+            endl();
+        }
+        rule();
+        if (status[0]) {
+            cell(status_style, status, -1);
+            endl();
+        }
+        cell(S_DIM, "Up/Down choose  Enter go  Esc back", -1);
+        end_screen();
+        int k = read_key();
+        status[0] = 0;
+        *pos_io = pos;
+        if (pnp_stop || k == K_QUIT || k == K_ESC || k == 'q' || k == K_BKSP || k == K_LEFT)
+            return -1;
+        if (k == K_UP || k == 'k')
+            pos = pos > 0 ? pos - 1 : n - 1;
+        else if (k == K_DOWN || k == 'j')
+            pos = pos < n - 1 ? pos + 1 : 0;
+        else if (k == K_ENTER || k == K_RIGHT)
+            return pos;
+        *pos_io = pos;
+    }
+}
+
+static int menu(const char *title, const char *intro, const char *const *items, int n)
+{
+    int pos = 0;
+    return menu_at(title, intro, items, n, &pos);
+}
+
+/* runs one group command off the full screen, then waits for Enter: its exit status */
+static int run_group(const char *what, int argc, char **argv)
+{
+    term_leave();
+    printf("pnp: %s\n\n", what);
+    fflush(stdout);
+    int r = pnp_group_cli(argc, argv);
+    fflush(stdout);
+    if (!pnp_stop)
+        wait_enter("\nPress Enter to go back.");
+    term_enter();
+    refresh_all();
+    scan_groups();
+    return r;
+}
+
+/* the pnp sticks plugged in (pnp-courier-setup): a path chosen, malloc'd, or NULL */
+static const char *sticks_dir(void)
+{
+#ifdef PNP_TEST
+    return getenv("PNP_TEST_STICKS"); /* test hook: sticks as files in a folder */
+#else
+    return NULL;
+#endif
+}
+
+static char *pick_stick(const char *title, const char *intro, const char *exclude, int allow_none)
+{
+    char *paths[32], labels[33][300];
+    const char *items[33];
+    int n = cs_find_devices(sticks_dir(), paths, 32), m = 0;
+    char *keep[33];
+    for (int i = 0; i < n; i++) {
+        if (exclude && strcmp(paths[i], exclude) == 0) {
+            free(paths[i]);
+            continue;
+        }
+        struct cstore c;
+        char err[256];
+        static const char *const role[] = {"courier", "self drive", "kill card"};
+        if (cs_open(&c, paths[i], err, sizeof err) == 0) {
+            snprintf(labels[m], sizeof labels[m], "%s  (a %s, member %d, %llu MiB)", paths[i], role[c.role],
+                     c.owner + 1, (unsigned long long)(c.capacity >> 20));
+            cs_close(&c);
+        } else {
+            snprintf(labels[m], sizeof labels[m], "%s  (blank pnp drive)", paths[i]);
+        }
+        pnp_clean(labels[m]);
+        items[m] = labels[m], keep[m++] = paths[i];
+    }
+    if (allow_none)
+        items[m] = "none", keep[m++] = NULL;
+    if (m == 0) {
+        set_status(c_yellow(), "No pnp drives found. Plug them in; a new drive needs sudo pnp-courier-setup /dev/sdX "
+                                "first (man pnp-courier-setup)");
+        return NULL;
+    }
+    int c = menu(title, intro, items, m);
+    char *chosen = c >= 0 && keep[c] ? strdup(keep[c]) : NULL;
+    for (int i = 0; i < m; i++)
+        free(keep[i]);
+    return chosen;
+}
+
+/* a member of the group in gdir (not me, still in it): its number as text, "all", or "" on Esc */
+static void pick_member(const char *gdir, const char *title, int allow_all, char *out, size_t len)
+{
+    out[0] = 0;
+    struct grp g;
+    char err[256];
+    if (grp_load(gdir, &g, err, sizeof err) < 0)
+        return;
+    static char names[GRP_MAX_MEMBERS + 1][64];
+    const char *items[GRP_MAX_MEMBERS + 1];
+    int num[GRP_MAX_MEMBERS + 1], m = 0;
+    for (int i = 0; i < g.n; i++)
+        if (i != g.me && !grp_bit(g.left, i) && !grp_bit(g.expelled, i)) {
+            grp_member_name(&g, i, names[m], sizeof names[m]);
+            pnp_clean(names[m]);
+            items[m] = names[m], num[m++] = i + 1;
+        }
+    if (allow_all && m > 1)
+        items[m] = "everyone", num[m++] = 0;
+    grp_free(&g);
+    int c = m ? menu(title, NULL, items, m) : -1;
+    if (c >= 0) {
+        if (num[c])
+            snprintf(out, len, "%d", num[c]);
+        else
+            snprintf(out, len, "all");
+    }
+}
+
+/* which group, when there's more than one: an index into glist, or -1 */
+static int pick_group(const char *title)
+{
+    if (ngroups == 1)
+        return 0;
+    const char *items[64];
+    for (int i = 0; i < ngroups && i < 64; i++)
+        items[i] = glist[i].label;
+    return ngroups ? menu(title, NULL, items, ngroups < 64 ? ngroups : 64) : -1;
+}
+
+/* where an import goes: a code cylinder (or a typed folder); NULL on Esc */
+static char *pick_cylinder(void)
+{
+    const char *items[MAX_DEST + 1];
+    char labels[MAX_DEST][PATH_MAX + 40];
+    int m = 0;
+    for (int i = 1; i < ndest; i++) {
+        snprintf(labels[m], sizeof labels[m], "%s", dest[i].path);
+        pnp_clean(labels[m]);
+        items[m] = labels[m], m++;
+    }
+    items[m++] = "type a folder...";
+    int c = menu("Where should the group go?", "Your code cylinder: only on a machine you fully control, alone.",
+                 items, m);
+    if (c < 0)
+        return NULL;
+    if (c < m - 1)
+        return strdup(dest[c + 1].path);
+    char typed[PATH_MAX] = "";
+    if (!input_line("The folder to put the group in (on your code cylinder):", typed, sizeof typed))
+        return NULL;
+    if (typed[0] == '~') {
+        const char *home = getenv("HOME");
+        char t[PATH_MAX];
+        snprintf(t, sizeof t, "%s%s", home ? home : "", typed + 1);
+        snprintf(typed, sizeof typed, "%s", t);
+    }
+    return strdup(typed);
+}
+
+static void meeting(const char *from)
+{
+    char *self = pick_stick("Your self drive", "It stays with you: only your own laptop touches it.", NULL, 0);
+    if (!self)
+        return;
+    char *cour = pick_stick("Your courier", "It goes to one member at a time and comes straight back.", self, 0);
+    if (!cour) {
+        free(self);
+        return;
+    }
+    char *argv[12];
+    int argc = 0;
+    argv[argc++] = "pnp", argv[argc++] = "--meet", argv[argc++] = "--self", argv[argc++] = self;
+    argv[argc++] = "--courier", argv[argc++] = cour;
+    if (sticks_dir())
+        argv[argc++] = "--sticks", argv[argc++] = (char *)sticks_dir();
+    if (from)
+        argv[argc++] = "--from", argv[argc++] = (char *)from;
+    argv[argc] = NULL;
+    if (run_group(from ? "re-meeting" : "the meeting", argc, argv) == 0)
+        set_status(c_green(), "The meeting is done for you: at home, alone, import it (p, then Import)");
+    free(self), free(cour);
+}
+
+static void import_meeting(void)
+{
+    char *self = pick_stick("Import: which is your self drive?", "At home, alone, on a machine you fully control.",
+                            NULL, 0);
+    if (!self)
+        return;
+    char *dest_dir = pick_cylinder();
+    char *card = dest_dir ? pick_stick("A kill card?", "A third drive for half your emergency keys, kept apart "
+                                                       "from the cylinder (or none).", self, 1)
+                          : NULL;
+    if (dest_dir) {
+        char *argv[8];
+        int argc = 0;
+        argv[argc++] = "pnp", argv[argc++] = "--import", argv[argc++] = self, argv[argc++] = dest_dir;
+        if (card)
+            argv[argc++] = "--kill-card", argv[argc++] = card;
+        argv[argc] = NULL;
+        if (run_group("importing the meeting", argc, argv) == 0)
+            set_status(c_green(), "Imported: the group is on your code cylinder");
+    }
+    free(self), free(dest_dir), free(card);
+}
+
+static void group_actions(int gi)
+{
+    char gdir[PATH_MAX];
+    snprintf(gdir, sizeof gdir, "%s", glist[gi].dir);
+    const char *items[] = {"Info: what's left, who can read what, warnings",
+                           "Report keys compromised (a kill notice)...",
+                           "Leave this group (or end this pair)...",
+                           "Re-meet: start the group's next meeting...",
+                           "Back"};
+    int c = menu(glist[gi].label, NULL, items, 5);
+    if (c == 0) {
+        char *argv[] = {"pnp", "--info", "--groups", gdir, NULL};
+        run_group("info", 4, argv);
+    } else if (c == 1) {
+        const char *scopes[] = {"The whole group", "One member's keys (a stolen or lost cylinder)", "Back"};
+        int sc = menu("Report keys compromised",
+                      "The notice is written to this folder: other members add their signature, then you send it to "
+                      "everyone.", scopes, 3);
+        char member[16] = "", scope[32];
+        if (sc == 1)
+            pick_member(gdir, "Whose keys?", 0, member, sizeof member);
+        if (sc == 0 || (sc == 1 && member[0])) {
+            snprintf(scope, sizeof scope, sc == 0 ? "group" : "member:%s", member);
+            char *argv[] = {"pnp", "--kill", scope, "--groups", gdir, NULL};
+            run_group("a kill notice", 5, argv);
+        }
+    } else if (c == 2) {
+        const char *yn[] = {"No, go back", "Yes: end my keys in this group"};
+        if (menu("Leave this group?", "Your keys for it are wiped. What the others already received stays with them.",
+                 yn, 2) == 1) {
+            char *argv[] = {"pnp", "--leave", "--groups", gdir, NULL};
+            run_group("leaving the group", 4, argv);
+        }
+    } else if (c == 3) {
+        meeting(gdir);
+    }
+}
+
+static void groups_screen(void)
+{
+    scan_groups();
+    int pos = 0;
+    for (;;) {
+        const char *items[70];
+        int m = 0;
+        for (int i = 0; i < ngroups && m < 64; i++)
+            items[m++] = glist[i].label;
+        int first_action = m;
+        items[m++] = "Start or join a meeting...";
+        items[m++] = "Import a meeting (at home, alone)...";
+        items[m++] = "Check a new drive before a meeting...";
+        items[m++] = "Back to the files";
+        int c = menu_at("Pairs and groups", ngroups ? "Your groups (Enter for more), and what you can do:"
+                                                 : "No groups on your drives yet. Meet in person to make one:",
+                        items, m, &pos);
+        if (c < 0 || c == m - 1)
+            return;
+        if (c < first_action)
+            group_actions(c);
+        else if (c == first_action)
+            meeting(NULL);
+        else if (c == first_action + 1)
+            import_meeting();
+        else if (c == first_action + 2) {
+            char *st = pick_stick("Check which drive?", "It's written all over and read back: it must be blank or "
+                                                         "unneeded.", NULL, 0);
+            if (st) {
+                char *argv[] = {"pnp", "--courier-check", st, NULL};
+                run_group("checking the drive", 3, argv);
+                free(st);
+            }
+        }
+    }
+}
+
+/* s on a file: seal it, sign it, or send it */
+static void file_actions(const struct entry *e)
+{
+    if (!e || e->dir || !is_plain(e)) {
+        set_status(c_yellow(), "Choose a file to seal, sign or send");
+        return;
+    }
+    scan_groups();
+    if (!ngroups) {
+        set_status(c_yellow(), "No groups on your drives: plug in your code cylinder (or meet first: p)");
+        return;
+    }
+    int gi = pick_group("Seal, sign or send with which group?");
+    if (gi < 0)
+        return;
+    char gdir[PATH_MAX], name[PATH_MAX], who[16];
+    snprintf(gdir, sizeof gdir, "%s", glist[gi].dir);
+    snprintf(name, sizeof name, "%s", e->name);
+    int group = glist[gi].n >= 3;
+    const char *pair_items[] = {"Seal it for the other person (proves nothing to anyone else)",
+                                "Send it, encrypted (deniable)", "Back"};
+    const char *group_items[] = {"Sign it (every other member can check it; you can't deny it)",
+                                 "Send it, encrypted and signed", "Send it, encrypted, unsigned (deniable)",
+                                 "Seal it for one member (proves nothing to anyone else)", "Back"};
+    char title[PATH_MAX + 16];
+    snprintf(title, sizeof title, "%s", name);
+    pnp_clean(title);
+    int c = group ? menu(title, glist[gi].label, group_items, 5) : menu(title, glist[gi].label, pair_items, 3);
+    int act = group ? c : c == 0 ? 3 : c == 1 ? 2 : -1; /* the pair's choices, as the group's numbers */
+    if (act == 0) {
+        char *argv[] = {"pnp", "--sign", name, "--groups", gdir, NULL};
+        run_group("signing", 5, argv);
+    } else if (act == 1 || act == 2) {
+        pick_member(gdir, "Send to whom?", 1, who, sizeof who);
+        if (who[0]) {
+            char *argv[] = {"pnp", "--send", name, "--to", who, "--groups", gdir, act == 1 ? "--sign" : NULL, NULL};
+            run_group("sending", act == 1 ? 8 : 7, argv);
+        }
+    } else if (act == 3) {
+        pick_member(gdir, "Seal it for whom?", 0, who, sizeof who);
+        if (who[0]) {
+            char *argv[] = {"pnp", "--seal", name, "--to", who, "--groups", gdir, NULL};
+            run_group("sealing", 7, argv);
+        }
+    }
+}
+
+/* Enter on a seal, a signature, a group message or a kill notice: 1 if handled */
+static int group_file(const struct entry *e)
+{
+    if (!e || e->dir)
+        return 0;
+    char base[PATH_MAX];
+    scan_groups();
+    if (ends_with(e->name, ".pnp.seal") || ends_with(e->name, ".pnp.sig")) {
+        int seal = ends_with(e->name, ".pnp.seal");
+        snprintf(base, sizeof base, "%.*s", (int)(strlen(e->name) - (seal ? 9 : 8)), e->name);
+        char *argv[] = {"pnp", seal ? "--check-seal" : "--verify-sig", base, (char *)e->name, "--groups", gall, NULL};
+        run_group(seal ? "checking the seal" : "checking the signature", 6, argv);
+        return 1;
+    }
+    if (ends_with(e->name, ".pnp-signed")) {
+        char *argv[] = {"pnp", "--verify-sig", (char *)e->name, "--groups", gall, NULL};
+        run_group("checking the signed message", 5, argv);
+        return 1;
+    }
+    if (ends_with(e->name, ".pnp-kill")) {
+        const char *yn[] = {"No, go back", "Yes: add my signature (a confirmation that these keys are compromised)"};
+        if (menu("A kill notice", "Add your signature to it? Only if you know the keys really are compromised.", yn,
+                 2) == 1) {
+            char *argv[] = {"pnp", "--kill-sign", (char *)e->name, "--groups", gall, NULL};
+            run_group("co-signing the kill notice", 5, argv);
+        }
+        return 1;
+    }
+    if (ends_with(e->name, ".pnp") && e->h.kind == H_NONE && ngroups) { /* no pnp header: a group message */
+        char *argv[] = {"pnp", "--receive", (char *)e->name, "--groups", gall, NULL};
+        run_group("receiving the message", 5, argv);
+        return 1;
+    }
+    return 0;
+}
+
 static void go(void)
 {
     int nsel = 0, plain = 0, ct = 0, other = 0;
     for (int i = 0; i < nents; i++)
         nsel += ents[i].sel;
+    if (!nsel && nents && group_file(&ents[cur]))
+        return;
     if (!nsel && nents && ents[cur].dir) {
         if (chdir(ents[cur].name) < 0) {
             set_status(c_red(), "can't open %s: %s", ents[cur].name, strerror(errno));
@@ -1573,6 +2023,7 @@ int pnp_tui(void)
     const char *no_color = getenv("NO_COLOR");
     color = no_color == NULL || !no_color[0];
     refresh_all();
+    pnp_group_interactive();
     term_enter();
     for (int quit = 0; !quit && !pnp_stop;) {
         draw_browser();
@@ -1599,6 +2050,8 @@ int pnp_tui(void)
         case K_ENTER: case K_RIGHT: go(); break;
         case K_BKSP: case K_LEFT: up_folder(); break;
         case 'c': choose_cylinder(); break;
+        case 'p': groups_screen(); break;
+        case 's': file_actions(nents ? &ents[cur] : NULL); break;
         case 'r': refresh_all(); set_status(NULL, "Looked again for drives and keys"); break;
         case '.': show_hidden = !show_hidden; load_dir(); break;
         }
@@ -1626,6 +2079,7 @@ int pnp_tui(void)
     free(ents);
     free(keys);
     free(scr);
-    ents = NULL, keys = NULL, scr = NULL;
+    free(glist);
+    ents = NULL, keys = NULL, scr = NULL, glist = NULL;
     return 0;
 }

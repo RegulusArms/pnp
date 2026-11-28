@@ -247,7 +247,7 @@ int meet_make_splits(const struct grp *roster, struct cstore *self, struct pnp_r
             struct crec blk;
             if (cs_find(self, R_SIGN_BLOCK, S, me, S, si, &blk) < 0) {
                 char who[48];
-                snprintf(err, errlen, "no signer block from %s on the self stick: round 1 isn't complete",
+                snprintf(err, errlen, "no signer block from %s on the self drive: round 1 isn't complete",
                          grp_member_name(roster, S, who, sizeof who));
                 return -1;
             }
@@ -673,7 +673,7 @@ int meet_import(struct cstore *self, const char *root, char **out_dir, char *err
         return -1;
     struct crec r;
     if (self->role != CS_SELF || cs_find(self, R_ROSTER, -1, -1, -1, -1, &r) < 0 || r.len > (1 << 20)) {
-        snprintf(err, errlen, "%s isn't a self stick from a meeting", self->path);
+        snprintf(err, errlen, "%s isn't a self drive from a meeting", self->path);
         return -1;
     }
     uint8_t *gb = malloc(r.len ? (size_t)r.len : 1);

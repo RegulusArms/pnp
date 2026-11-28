@@ -6,7 +6,8 @@
 # without hardware random sources; PNP_TEST_VM says whether to act as a virtual machine (src/rng.c);
 # PNP_TEST_MEMINFO replaces /proc/meminfo (src/protect.c); PNP_TEST_NOW fakes today's date, --test-setup runs a whole
 # meeting in one process, PNP_TEST_COURIER_LIE makes a courier lie, PNP_TEST_CHEAT / PNP_TEST_SPLITS / PNP_TEST_KEEP_SLOT
-# make a signer cheat (src/group.c, gmeet.c, courier.c, uss.c); PNP_TEST_MEDIA replaces /media/$USER and PNP_TEST_FDS lists
+# make a signer cheat, PNP_TEST_STICKS points the interactive mode at stick files (src/group.c, gmeet.c, courier.c,
+# uss.c, tui.c); PNP_TEST_MEDIA replaces /media/$USER and PNP_TEST_FDS lists
 # the files still open on quitting (src/tui.c); PNP_TEST_PROGRESS draws the progress line at once (src/progress.c). They don't touch the real /dev/hwrng or drives. PNP_SANITIZE=1 (make
 # sanitize) skips the one check AddressSanitizer makes meaningless.
 set -uo pipefail
@@ -565,7 +566,7 @@ check '"$PNP" --verify "$T/w/f.pnp" 2>"$T/err" && grep -q "is whole" "$T/err" &&
        [[ $(ls -A "$T/w" | wc -l) == 3 ]]' "--verify passes a whole ciphertext and writes nothing"
 check '"$PNP" -q --verify "$T/w/f.pnp" 2>"$T/err" && [[ ! -s "$T/err" ]]' "--verify -q answers with its exit status only"
 cp "$T/w/f.pnp" "$T/w/bad.pnp" && cp "$T/w/f.pnp.key" "$T/w/bad.pnp.key"
-printf '\x01' | dd of="$T/w/bad.pnp" bs=1 seek=5000 conv=notrunc 2>/dev/null
+flip "$T/w/bad.pnp" 5000
 check '! "$PNP" --verify "$T/w/bad.pnp" 2>"$T/err" && grep -q "integrity check failed" "$T/err" && [[ ! -e "$T/w/bad" ]]' \
     "--verify fails (exit 1) when one byte of the ciphertext changed"
 echo other >"$T/w/g" && "$PNP" -q "$T/w/g"

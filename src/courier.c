@@ -118,7 +118,7 @@ int cs_create(struct cstore *c, const char *path, int role, int owner, const uin
     c->gen = gen;
     c->end = CS_HDR_LEN;
     if (c->capacity < CS_HDR_LEN) {
-        snprintf(err, errlen, "%s is too small to be a pnp stick", path);
+        snprintf(err, errlen, "%s is too small to be a pnp drive", path);
         cs_close(c);
         return -1;
     }
@@ -150,7 +150,7 @@ int cs_open(struct cstore *c, const char *path, char *err, size_t errlen)
     uint64_t real = store_size(c->fd);
     if (memcmp(h, MAGIC_CS, 8) != 0 || c->role > CS_KILLCARD || c->end < CS_HDR_LEN || c->end > c->capacity ||
         c->capacity > real) {
-        snprintf(err, errlen, "%s isn't a pnp courier, self stick or kill card (or it's damaged)", path);
+        snprintf(err, errlen, "%s isn't a pnp courier, self drive or kill card (or it's damaged)", path);
         cs_close(c);
         return -1;
     }
@@ -309,7 +309,7 @@ int cs_verify(struct cstore *c, char *err, size_t errlen)
     int st, i = 0;
     while ((st = cs_record(c, &pos, &r)) == 0) {
         if (check_sum(c, &r) < 0) {
-            snprintf(err, errlen, "%s: record %d is damaged (bad stick or bad copy): redo this transfer", c->path,
+            snprintf(err, errlen, "%s: record %d is damaged (bad drive or bad copy): redo this transfer", c->path,
                      i + 1);
             return -1;
         }
@@ -358,7 +358,7 @@ int cs_copy_all(struct cstore *src, struct cstore *dst, char *err, size_t errlen
     return 0;
 }
 
-/* writes for cs_overwrite; the test build can make the "stick" lie (PNP_TEST_COURIER_LIE=drop: writes are
+/* writes for cs_overwrite; the test build can make the "drive" lie (PNP_TEST_COURIER_LIE=drop: writes are
  * ignored; =wrap: it holds only half what it claims and wraps around) */
 static int overwrite_write(int fd, const void *buf, size_t n, uint64_t off, uint64_t capacity)
 {
@@ -366,7 +366,7 @@ static int overwrite_write(int fd, const void *buf, size_t n, uint64_t off, uint
     const char *lie = getenv("PNP_TEST_COURIER_LIE");
     if (lie && strcmp(lie, "drop") == 0)
         return 0;
-    if (lie && strcmp(lie, "wrap") == 0) /* a stick that really holds only 4 KiB */
+    if (lie && strcmp(lie, "wrap") == 0) /* a drive that really holds only 4 KiB */
         off %= 4096;
 #endif
     (void)capacity;
@@ -413,7 +413,7 @@ int cs_overwrite(struct cstore *c, char *err, size_t errlen)
     if (memcmp(a, b, sizeof a) != 0) {
         snprintf(err, errlen,
                  "%s didn't keep what was written over it (it ignores writes or isn't as big as it claims): don't use "
-                 "this stick; destroy it, and use another one", c->path);
+                 "this drive; destroy it, and use another one", c->path);
         return -1;
     }
     c->end = CS_HDR_LEN;
@@ -475,7 +475,7 @@ int cs_capacity_check(const char *path, char *err, size_t errlen)
     c.path = strdup(path);
     if (c.fd < 0 || !c.path) {
         snprintf(err, errlen, "%s: %s%s", path, strerror(errno),
-                 errno == EACCES ? " (is it a pnp stick? Run sudo pnp-courier-setup on it, and join the pnp group)" : "");
+                 errno == EACCES ? " (is it a pnp drive? Run sudo pnp-courier-setup on it, and join the pnp group)" : "");
         cs_close(&c);
         return -1;
     }

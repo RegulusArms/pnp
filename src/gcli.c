@@ -113,8 +113,13 @@ int pnp_card_repack(const char *card, const char *gdir, char *tmp, char *err, si
 
 /* ---- the fence: once the groups are loaded, nothing outside their folders, the files' folders and the current
  * folder can be touched (Landlock, sandbox.c) ---- */
+static int interactive; /* called from the interactive mode, which goes on to other folders: no fence */
+void pnp_group_interactive(void) { interactive = 1; }
+
 static void fence(const struct grp *gs, int n, const char *a, const char *b, const char *c)
 {
+    if (interactive)
+        return;
     char *dirs[MAX_GROUPS + 4];
     int nd = 0;
     for (int i = 0; i < n; i++)
@@ -151,7 +156,15 @@ static void fence(const struct grp *gs, int n, const char *a, const char *b, con
 static int load_all(const struct opts *o, struct grp *gs, int max)
 {
     char *dirs[MAX_GROUPS];
-    int n = grp_find_all(o->groups, dirs, max < MAX_GROUPS ? max : MAX_GROUPS), got = 0;
+    int n = 0, got = 0;
+    if (o->groups && strchr(o->groups, ':')) { /* several folders, separated by colons */
+        char *copy = strdup(o->groups), *save = NULL;
+        for (char *t = copy ? strtok_r(copy, ":", &save) : NULL; t && n < MAX_GROUPS; t = strtok_r(NULL, ":", &save))
+            n += grp_find_all(t, dirs + n, MAX_GROUPS - n);
+        free(copy);
+    } else {
+        n = grp_find_all(o->groups, dirs, max < MAX_GROUPS ? max : MAX_GROUPS);
+    }
     for (int i = 0; i < n; i++) {
         char err[512];
         if (grp_load(dirs[i], &gs[got], err, sizeof err) == 0)
@@ -583,6 +596,8 @@ static int report_sig(const struct grp *g, int signer, int level, int exact, int
 
 static int cmd_verify_sig(const struct opts *o, const char *file, const char *sig_path)
 {
+    if (!file)
+        return 2;
     struct grp gs[MAX_GROUPS];
     int n = load_all(o, gs, MAX_GROUPS), ret = 1, want = 0;
     fence(gs, n, file, sig_path, NULL);
@@ -1075,7 +1090,7 @@ static int cmd_info(const struct opts *o, const char *path)
         struct cstore c;
         char err[512];
         if (cs_open(&c, path, err, sizeof err) == 0) {
-            static const char *const role[] = {"courier", "self stick", "kill card"};
+            static const char *const role[] = {"courier", "self drive", "kill card"};
             char hex[2 * GRP_ID_LEN + 1];
             grp_hex(c.group, hex);
             out("pnp %s of member %d · meeting %.8s, generation %u · visiting member %d, round %d · %llu bytes used",
@@ -1170,6 +1185,7 @@ int pnp_group_cli(int argc, char **argv)
     };
     struct opts o = {0};
     o.lookahead = DEFAULT_LOOKAHEAD;
+    optind = 0; /* getopt starts afresh: the interactive mode calls this more than once */
     /* the command is argv[1]; after it, --sign is the "sign this message too" flag of --send */
     int cmd = 0, c, first = 1;
     while ((c = getopt_long(argc, argv, "o:fq", lo, NULL)) != -1) {

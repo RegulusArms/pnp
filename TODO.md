@@ -9,8 +9,9 @@ young program into a hardened one.
 
 - [ ] **An independent security audit** of rng.c, mac.c, kdf.c/protect.c, fileio.c and tui.c's terminal handling,
   by someone who didn't write them, together with format.c (every header parsed), keys.c (terminal input) and
-  sandbox.c (the seccomp filter and Landlock rules). docs/threat-model.md and docs/constant-time.md are the
-  starting points.
+  sandbox.c (the seccomp filter and Landlock rules), and the pairs and groups code (uss.c, gmsg.c, meeting.c,
+  courier.c, kill.c, group.c), including a constant-time review of uss.c. docs/threat-model.md and
+  docs/constant-time.md are the starting points.
 - [ ] **Power-cut testing of the commit sequence.** Simulate a real power cut (dm-log-writes or dm-flakey, needs
   root), which would also check that the fsyncs are in the right places. Kills at every write are already
   tested.
@@ -27,9 +28,17 @@ The first version is in 0.1.0-alpha.9 ([docs/group.md](docs/group.md)). Still to
   carries).
 - [ ] **Strict courier mode in the wizard:** one courier per pair, kept for good, for groups that won't rely on the
   overwritten-courier assumption.
-- [ ] **Group actions in the interactive mode** (`pnp` alone in a terminal). For now the meeting wizard is
-  `pnp --meet`.
 - [ ] **Telling a member who missed a re-meeting** that a newer generation exists, when something from it arrives.
+
+## Interactive mode
+
+- [ ] **Prepare drives from the interactive mode:** set up each kind of drive pnp uses without leaving it: a
+  code cylinder (a key drive, with LUKS2 encryption if wanted) and the raw pnp drives used by pairs and groups
+  (courier, self drive, kill card), followed by the capacity check. Today that takes `cryptsetup` and
+  `pnp-courier-setup` by hand. Erasing a drive needs root and pnp never runs as root, so the interactive mode
+  would hand that one step to a small, separately readable helper (asking for the password through `sudo` or
+  `pkexec`), with the same safeguards as now: external drives only, nothing mounted, the drive shown and ERASE
+  typed before anything is changed.
 
 ## Risky quality-of-life improvements
 
@@ -44,6 +53,11 @@ Convenient, but each works against part of the design. Only with a good answer t
 
 ## Other
 
+- [ ] **Physical noise as extra random sources:** a microphone listening to background noise, or an SDR tuned to an
+  empty frequency (mostly the receiver's own thermal noise). Each would be XORed in with the others, never used
+  alone. Each needs its own SP 800-90B assessment, extraction that's information-theoretic rather than a hash,
+  and health tests that catch someone injecting sound or a radio signal. To stay libc-only, likely as an "external
+  source": a separately audited capture program feeding pnp through a FIFO.
 - [ ] TPM 2.0 (`/dev/tpmrm0`) as an extra hardware source, for machines whose TPM isn't already behind
   `/dev/hwrng`.
 - [ ] arm64 packages (no RDSEED there: `/dev/hwrng` only).

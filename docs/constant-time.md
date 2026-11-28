@@ -106,4 +106,7 @@ don't matter.
   the usual optimisation levels; a future compiler could still introduce a branch, which is why the MAC check
   runs in `make test` on every CI compiler.
 - It covers timing and memory addresses, not power or electromagnetic side channels.
+- It predates pairs and groups (0.1.0-alpha.9). Seals and messages use the MAC and the tag comparison reviewed
+  here (mac.c, called from gmsg.c), but the signature code (uss.c's hash family and tag checks) and the rest of
+  the group code haven't had this review yet.
 - An independent review is still planned (TODO.md).

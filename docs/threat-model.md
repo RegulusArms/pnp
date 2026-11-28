@@ -8,13 +8,16 @@ guarantee rests on" is the short version; this is the long one.
 For a file encrypted with an honest copy of pnp on a trustworthy computer:
 
 1. **Secrecy.** Without the key, the ciphertext tells an attacker nothing about the file except its length, however
-   much computing power they have, even if P = NP. (One-time pad: [format.md](format.md).)
+   much computing power they have, even if P = NP, as long as the pad is truly random, used once and kept secret.
+   (One-time pad: [format.md](format.md).)
 2. **Integrity.** Any change to the ciphertext or the key, even one bit, is detected when decrypting (or with
-   `--verify`), and nothing is written. A forger's chance is at most about 2^-90 for a 1 TiB file, again whatever
-   their computing power. (Wegman-Carter one-time MAC: src/mac.c.)
-3. **No lost files.** A failure, a cancel, a crash or a power cut never leaves a half-written file under a real
-   name, never replaces an existing file without `-f`, and never loses the old key when `-f` replaces one.
-   ([recovery.md](recovery.md).)
+   `--verify`), and nothing is written, except with probability at most (L + 1) / (2^127 − 1) per forgery attempt
+   (L: the file's length in 8-byte blocks; about 2^-90 for a 1 TiB file), whatever the forger's computing power. (Wegman-Carter one-time MAC: src/mac.c.)
+3. **No lost files (a design objective).** A failure, a cancel or a crash is designed never to leave a
+   half-written file under a real name, never to replace an existing file without `-f`, and never to lose the
+   old key when `-f` replaces one. This is tested by killing pnp at every step of saving. A power cut is meant to
+   be covered by the same design (fsyncs before each rename and of the folder after), but that remains an
+   objective until real power-loss testing is done (TODO.md). ([recovery.md](recovery.md).)
 
 Secrecy and integrity are *information-theoretic*: they don't depend on any problem being hard to compute. That's
 the point of pnp. Everything below is about what they rest on.
@@ -113,9 +116,9 @@ signatures add three assumptions of their own:
 - **An honest majority:** at most ω members cheat (set at the meeting, shown by `pnp --info`). Members who leave
   or are removed count against ω.
 - **Custody of the splits:** no signer ever reads how the recipients split its functions. A courier only passes
-  between its owner and one member. With one courier per person, reused between members, this also assumes nobody
-  reads the stick's flash chip below its USB interface while holding it. pnp overwrites and reads back every
-  courier between visits.
+  between its owner and one member. With one courier per person, reused between members, pnp overwrites and reads
+  back every courier between visits, and this also assumes nobody recovers what the overwrite didn't reach while
+  holding it: remapped sectors on a spinning disk (preferred), or wear-levelled copies inside a flash chip.
 - **No restored key files:** a signing slot or pad range used twice breaks everything. pnp burns each one before
   using it, but a group folder restored from a backup would bring used ones back.
 
@@ -138,6 +141,6 @@ Who talks to whom is hidden from outsiders, but file sizes and timing aren't.
 | Key drive identity | src/tui.c | run.sh |
 | Seals and messages (pairs, groups) | src/gmsg.c, group.c | tests/group.sh |
 | Group signatures, parameters | src/uss.c, meeting.c | tests/test_uss.c (independent vectors, exhaustive check), group.sh |
-| Meetings, courier sticks | src/meeting.c, courier.c, gmeet.c | tests/group.sh, tests/fuzz/fuzz_courier.c |
+| Meetings, courier drives | src/meeting.c, courier.c, gmeet.c | tests/group.sh, tests/fuzz/fuzz_courier.c |
 | Kill notices, leaving | src/kill.c | tests/group.sh, tests/fuzz/fuzz_kill.c |
 | Group file parsing | src/group.c | tests/fuzz/fuzz_group.c |
